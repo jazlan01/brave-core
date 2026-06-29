@@ -102,6 +102,7 @@ enum GraphMLAttrDef {
   kGraphMLAttrDefBindingType,
   kGraphMLAttrDefBlockType,
   kGraphMLAttrDefCallArgs,
+  kGraphMLAttrDefCookieSource,
   kGraphMLAttrDefEdgeType,
   kGraphMLAttrDefEventListenerId,
   kGraphMLAttrDefEdgeFrameId,
@@ -175,6 +176,16 @@ enum class StorageLocation {
   kSessionStorage,
 };
 CORE_EXPORT std::string StorageLocationToString(const StorageLocation location);
+
+// Identifies which channel set a cookie. Only meaningful for cookie writes
+// (StorageLocation::kCookie); other storage locations use kUnknown.
+enum class CookieSource {
+  kUnknown = 0,
+  kJS,           // document.cookie setter
+  kCookieStore,  // the async Cookie Store API (cookieStore.set/delete)
+  kHTTP,         // a Set-Cookie response header
+};
+CORE_EXPORT std::string CookieSourceToString(const CookieSource source);
 
 template <typename KeyArg, typename MappedArg>
 using ZeroBasedHashMap =

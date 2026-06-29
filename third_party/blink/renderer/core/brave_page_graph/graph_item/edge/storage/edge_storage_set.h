@@ -9,6 +9,7 @@
 #include <string>
 
 #include "brave/third_party/blink/renderer/core/brave_page_graph/graph_item/edge/storage/edge_storage.h"
+#include "brave/third_party/blink/renderer/core/brave_page_graph/types.h"
 #include "third_party/blink/renderer/platform/wtf/casting.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
@@ -24,10 +25,13 @@ class EdgeStorageSet final : public EdgeStorage {
                  NodeStorage* in_node,
                  const FrameId& frame_id,
                  const blink::String& key,
-                 const blink::PageGraphValue& value);
+                 const blink::PageGraphValue& value,
+                 const int script_position,
+                 const CookieSource cookie_source = CookieSource::kUnknown);
   ~EdgeStorageSet() override;
 
   const std::string& GetValue() const { return value_; }
+  CookieSource GetCookieSource() const { return cookie_source_; }
 
   ItemName GetItemName() const override;
   ItemDesc GetItemDesc() const override;
@@ -39,6 +43,8 @@ class EdgeStorageSet final : public EdgeStorage {
 
  private:
   const std::string value_;
+  const int script_position_;
+  const CookieSource cookie_source_;
 };
 
 }  // namespace brave_page_graph

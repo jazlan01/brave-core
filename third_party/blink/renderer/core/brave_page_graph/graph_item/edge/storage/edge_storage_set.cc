@@ -19,9 +19,13 @@ EdgeStorageSet::EdgeStorageSet(GraphItemContext* context,
                                NodeStorage* in_node,
                                const FrameId& frame_id,
                                const blink::String& key,
-                               const blink::PageGraphValue& value)
+                               const blink::PageGraphValue& value,
+                               const int script_position,
+                               const CookieSource cookie_source)
     : EdgeStorage(context, out_node, in_node, frame_id, key),
-      value_(blink::PageGraphValueToString(value)) {
+      value_(blink::PageGraphValueToString(value)),
+      script_position_(script_position),
+      cookie_source_(cookie_source) {
   CHECK(!out_node->IsNodeParser());
 }
 
@@ -41,6 +45,16 @@ void EdgeStorageSet::AddGraphMLAttributes(xmlDocPtr doc,
   EdgeStorage::AddGraphMLAttributes(doc, parent_node);
   GraphMLAttrDefForType(kGraphMLAttrDefValue)
       ->AddValueNode(doc, parent_node, value_);
+  // Offset of the assigning statement within the acting script source, matching
+  // the "script position" recorded on js call edges (see EdgeJSCall).
+  GraphMLAttrDefForType(kGraphMLAttrDefScriptPosition)
+      ->AddValueNode(doc, parent_node, script_position_);
+  // Only cookie writes carry a source channel; other storage locations leave
+  // this unset (kUnknown).
+  if (cookie_source_ != CookieSource::kUnknown) {
+    GraphMLAttrDefForType(kGraphMLAttrDefCookieSource)
+        ->AddValueNode(doc, parent_node, CookieSourceToString(cookie_source_));
+  }
 }
 
 bool EdgeStorageSet::IsEdgeStorageSet() const {

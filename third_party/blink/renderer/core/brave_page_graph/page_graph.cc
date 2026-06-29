@@ -856,7 +856,28 @@ void PageGraph::RegisterPageGraphWebAPICallWithResult(
           value.DeprecatedSubstring(cookie_key.length() + 1, value.length());
       RegisterStorageWrite(execution_context, cookie_key,
                            base::Value(cookie_value.Utf8()),
-                           brave_page_graph::StorageLocation::kCookie);
+                           brave_page_graph::StorageLocation::kCookie,
+                           brave_page_graph::CookieSource::kJS);
+      return;
+    }
+  } else if (name_piece.starts_with("CookieStore.")) {
+    // The async Cookie Store API. The instrumented call shape is
+    // CookieStore.set(name, value) / CookieStore.delete(name); record it as a
+    // cookie write tagged with the cookie-store source so it is distinguishable
+    // from the document.cookie channel.
+    // NOTE: the exact instrumented method name/arg shape must be confirmed
+    // against the generated bindings; if it differs, this branch is inert and
+    // the call falls through to a generic WebAPI call below.
+    if (name_piece == "CookieStore.set" && args.size() >= 2) {
+      RegisterStorageWrite(execution_context, String(args[0].GetString()),
+                           args[1],
+                           brave_page_graph::StorageLocation::kCookie,
+                           brave_page_graph::CookieSource::kCookieStore);
+      return;
+    }
+    if (name_piece == "CookieStore.delete" && args.size() >= 1) {
+      RegisterStorageDelete(execution_context, String(args[0].GetString()),
+                            brave_page_graph::StorageLocation::kCookie);
       return;
     }
   } else if (name_piece.starts_with("Storage.")) {
@@ -1853,10 +1874,14 @@ void PageGraph::RegisterStorageRead(blink::ExecutionContext* execution_context,
 void PageGraph::RegisterStorageWrite(blink::ExecutionContext* execution_context,
                                      const String& key,
                                      const blink::PageGraphValue& value,
-                                     const StorageLocation location) {
+                                     const StorageLocation location,
+                                     const CookieSource cookie_source) {
   VLOG(1) << "RegisterStorageWrite) key: " << key << ", value: " << value
-          << ", location: " << StorageLocationToString(location);
-  NodeActor* acting_node = GetCurrentActingNode(execution_context);
+          << ", location: " << StorageLocationToString(location)
+          << ", cookie source: " << CookieSourceToString(cookie_source);
+  ScriptPosition script_position = 0;
+  NodeActor* acting_node =
+      GetCurrentActingNode(execution_context, &script_position);
 
   if (!acting_node->IsNodeScript()) {
     acting_node = GetUnknownActorNode();
@@ -1876,7 +1901,8 @@ void PageGraph::RegisterStorageWrite(blink::ExecutionContext* execution_context,
   }
 
   FrameId frame_id = GetFrameId(execution_context);
-  AddEdge<EdgeStorageSet>(acting_node, storage_node, frame_id, key, value);
+  AddEdge<EdgeStorageSet>(acting_node, storage_node, frame_id, key, value,
+                          script_position, cookie_source);
 }
 
 void PageGraph::RegisterStorageDelete(

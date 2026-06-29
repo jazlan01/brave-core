@@ -245,6 +245,7 @@ class CORE_EXPORT PageGraph : public GarbageCollected<PageGraph>,
   PAGE_GRAPH_USING_DECL(Binding);
   PAGE_GRAPH_USING_DECL(BindingEvent);
   PAGE_GRAPH_USING_DECL(BindingType);
+  PAGE_GRAPH_USING_DECL(CookieSource);
   PAGE_GRAPH_USING_DECL(EdgeList);
   PAGE_GRAPH_USING_DECL(EventListenerId);
   PAGE_GRAPH_USING_DECL(FingerprintingRule);
@@ -398,10 +399,12 @@ class CORE_EXPORT PageGraph : public GarbageCollected<PageGraph>,
                            const String& key,
                            const blink::PageGraphValue& value,
                            const StorageLocation location);
-  void RegisterStorageWrite(blink::ExecutionContext* execution_context,
-                            const String& key,
-                            const blink::PageGraphValue& value,
-                            const StorageLocation location);
+  void RegisterStorageWrite(
+      blink::ExecutionContext* execution_context,
+      const String& key,
+      const blink::PageGraphValue& value,
+      const StorageLocation location,
+      const CookieSource cookie_source = CookieSource::kUnknown);
   void RegisterStorageDelete(blink::ExecutionContext* execution_context,
                              const String& key,
                              const StorageLocation location);

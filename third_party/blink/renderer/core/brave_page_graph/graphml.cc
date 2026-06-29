@@ -147,6 +147,8 @@ const GraphMLAttrs& GetGraphMLAttrs() {
        new GraphMLAttr(kGraphMLAttrForTypeEdge, "block type")},
       {kGraphMLAttrDefCallArgs,
        new GraphMLAttr(kGraphMLAttrForTypeEdge, "args")},
+      {kGraphMLAttrDefCookieSource,
+       new GraphMLAttr(kGraphMLAttrForTypeEdge, "cookie source")},
       {kGraphMLAttrDefEdgeType,
        new GraphMLAttr(kGraphMLAttrForTypeEdge, "edge type")},
       {kGraphMLAttrDefEventListenerId,

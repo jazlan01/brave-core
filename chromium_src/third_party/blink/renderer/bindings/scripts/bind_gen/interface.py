@@ -55,6 +55,13 @@ _PAGE_GRAPH_TRACKED_ITEMS = {
     "PerformanceTiming": {"*"},
     "Screen": {"*"},
     "Storage": {"*"},
+    "TextDecoder": {
+        "decode",
+    },
+    "TextEncoder": {
+        "encode",
+        "encodeInto",
+    },
     "WebGL2RenderingContext": {
         "getExtension",
         "getParameter",
@@ -65,6 +72,8 @@ _PAGE_GRAPH_TRACKED_ITEMS = {
         "getShaderPrecisionFormat",
     },
     "Window": {
+        "atob",
+        "btoa",
         "clearInterval",
         "clearTimeout",
         "fetch",
@@ -74,6 +83,8 @@ _PAGE_GRAPH_TRACKED_ITEMS = {
         "setTimeout",
     },
     "WorkerGlobalScope": {
+        "atob",
+        "btoa",
         "fetch",
         "performance",
     },

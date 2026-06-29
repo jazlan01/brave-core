@@ -144,4 +144,17 @@ std::string StorageLocationToString(const StorageLocation location) {
   }
 }
 
+std::string CookieSourceToString(const CookieSource source) {
+  switch (source) {
+    case CookieSource::kUnknown:
+      return "unknown";
+    case CookieSource::kJS:
+      return "js";
+    case CookieSource::kCookieStore:
+      return "cookie-store";
+    case CookieSource::kHTTP:
+      return "set-cookie-header";
+  }
+}
+
 }  // namespace brave_page_graph
