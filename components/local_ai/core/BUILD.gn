@@ -3,7 +3,10 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import("//brave/components/local_ai/buildflags/buildflags.gni")
 import("//mojo/public/tools/bindings/mojom.gni")
+
+assert(enable_local_ai)
 
 mojom_component("mojom") {
   output_prefix = "local_ai_mojom"
@@ -18,7 +21,9 @@ mojom_component("mojom") {
   public_deps = [ "//mojo/public/mojom/base" ]
 }
 
-source_set("features") {
+component("features") {
+  defines = [ "IS_LOCAL_AI_FEATURES_IMPL" ]
+
   sources = [
     "features.cc",
     "features.h",
@@ -34,6 +39,8 @@ static_library("core") {
   public = [
     "background_web_contents.h",
     "local_models_updater.h",
+    "on_device_speech_models_component_installer.h",
+    "on_device_speech_models_state.h",
     "pref_names.h",
     "url_constants.h",
   ]
@@ -42,6 +49,10 @@ static_library("core") {
     "background_web_contents.h",
     "local_models_updater.cc",
     "local_models_updater.h",
+    "on_device_speech_models_component_installer.cc",
+    "on_device_speech_models_component_installer.h",
+    "on_device_speech_models_state.cc",
+    "on_device_speech_models_state.h",
     "pref_names.cc",
     "pref_names.h",
   ]
@@ -68,7 +79,10 @@ static_library("core") {
 
 source_set("unit_tests") {
   testonly = true
-  sources = [ "local_models_updater_unittest.cc" ]
+  sources = [
+    "local_models_updater_unittest.cc",
+    "on_device_speech_models_component_installer_unittest.cc",
+  ]
 
   deps = [
     ":core",

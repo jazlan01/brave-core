@@ -216,7 +216,7 @@ tools/cr/brockit.py gen-rust-toolchain @latest-canary --watch
 
 ### `brockit.py update-rust-wasm-toolchain`
 This command repins the Rust/WASM toolchain objects in
-`tools/cr/toolchains/install_extra_deps.py` to the latest published archives for
+`tools/cr/install_extra_deps.py` to the latest published archives for
 a given Chromium tag's Rust+Clang revision, and commits the change. The tag's
 `tools/rust/update_rust.py` and `tools/clang/scripts/update.py` are read to
 identify the toolchain to pin.
@@ -841,7 +841,7 @@ class Regen(Versioned):
 
         terminal.run_npm_command('init')
 
-        terminal.run_npm_command('update_patches')
+        terminal.run_npm_command('update_patches', '--', '--no-plaster-check')
         if not dry_run:
             self._save_updated_patches()
 
@@ -1405,7 +1405,7 @@ class Upgrade(Versioned):
         return:
           The GitStatus after running update_patches.
         """
-        terminal.run_npm_command('update_patches')
+        terminal.run_npm_command('update_patches', '--', '--no-plaster-check')
 
         status = GitStatus()
         if status.has_deleted_patch_files():
@@ -2829,7 +2829,7 @@ class GenRustToolchain(Task):
 
 # Installer whose `EXTRA_DEPS` rust-toolchain entry is repinned by
 # `update-rust-wasm-toolchain` (relative to repository.brave.root).
-INSTALL_EXTRA_DEPS_FILE = Path('tools/cr/toolchains/install_extra_deps.py')
+INSTALL_EXTRA_DEPS_FILE = Path('tools/cr/install_extra_deps.py')
 
 # Chromium-side scripts that pin the Rust/Clang revision the toolchain is built
 # from, and the constants in them that identify it. `update-rust-wasm-toolchain`
@@ -3361,7 +3361,7 @@ def main():
         parents=[global_parser],
         formatter_class=argparse.RawTextHelpFormatter,
         help='Repins the Rust/WASM toolchain objects in '
-        'tools/cr/toolchains/install_extra_deps.py to the latest published '
+        'tools/cr/install_extra_deps.py to the latest published '
         'archives for a Chromium tag\'s Rust+Clang revision, and commits the '
         'change.')
     update_rust_parser.add_argument(

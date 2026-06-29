@@ -19,6 +19,7 @@ import("//brave/components/brave_wayback_machine/buildflags/buildflags.gni")
 import("//brave/components/commander/common/buildflags/buildflags.gni")
 import("//brave/components/containers/buildflags/buildflags.gni")
 import("//brave/components/email_aliases/buildflags/buildflags.gni")
+import("//brave/components/local_ai/buildflags/buildflags.gni")
 import("//brave/components/ntp_background_images/buildflags/buildflags.gni")
 import("//brave/components/playlist/core/common/buildflags/buildflags.gni")
 import("//brave/components/psst/buildflags/buildflags.gni")
@@ -66,7 +67,6 @@ source_set("ui") {
     "//brave/browser/skus",
     "//brave/browser/ui/page_info",
     "//brave/browser/ui/webui/brave_account",
-    "//brave/browser/ui/webui/local_ai",
     "//brave/components/ai_chat/core/common/buildflags",
 
     # Unconditional for gn check as the NTP WebUI always needs the mojom
@@ -106,6 +106,10 @@ source_set("ui") {
 
   if (is_mac) {
     deps += [ "//chrome/browser:global_keyboard_shortcuts_mac" ]
+  }
+
+  if (enable_local_ai) {
+    deps += [ "//brave/browser/ui/webui/local_ai" ]
   }
 
   allow_circular_includes_from = brave_ui_allow_circular_includes_from
@@ -672,7 +676,6 @@ source_set("ui") {
       "views/tabs/dragging/tab_drag_controller.h",
       "views/tabs/shared_pinned_tab_dummy_view_views.cc",
       "views/tabs/shared_pinned_tab_dummy_view_views.h",
-      "views/tabs/switches.h",
       "views/tabs/vertical_tab_utils.cc",
       "views/tabs/vertical_tab_utils.h",
       "views/toolbar/bookmark_button.cc",
@@ -697,6 +700,7 @@ source_set("ui") {
       "//brave/browser/ui/views/frame:frame_impl",
       "//brave/browser/ui/views/location_bar",
       "//brave/browser/ui/views/page_action",
+      "//brave/browser/ui/views/tabs",
       "//brave/browser/ui/views/tabs/accent_color",
       "//chrome/browser:shell_integration",
       "//chrome/browser/devtools",
@@ -964,9 +968,9 @@ source_set("ui") {
 
   if (enable_psst) {
     deps += [
-      "//brave/components/psst/browser/core",
       "//brave/components/psst/buildflags",
-      "//brave/components/psst/common",
+      "//brave/components/psst/core/browser",
+      "//brave/components/psst/core/common",
       "//brave/components/psst/resources",
       "//brave/components/psst/resources:psst_dialog_generated_resources",
     ]

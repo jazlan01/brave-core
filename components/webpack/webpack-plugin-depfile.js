@@ -8,9 +8,9 @@
 // This can be useful to know which files to monitor for changes
 // to cause a re-build only when neccessary.
 
-const path = require('path')
-const fs = require('fs')
-const mkdirp = require('mkdirp')
+import path from 'path'
+import fs from 'fs'
+import mkdirp from 'mkdirp'
 
 function generateDepfileContent(outputName, depPaths) {
   // File format is "dependency information in the syntax of a Makefile"
@@ -24,28 +24,31 @@ function writeDepfileContentSync(filePath, content) {
 }
 
 class GenerateDepfilePlugin {
-  constructor (options) {
+  constructor(options) {
     this.options = {
       depfilePath: 'depfile.d',
       depfileSourceName: '[UnknownOutputName]',
-      ...options
+      ...options,
     }
   }
 
-  apply (compiler) {
+  apply(compiler) {
     // These hooks cannot be used async, so must do sync ops.
     compiler.hooks.compilation.tap(this.constructor.name, (compilation) => {
       compilation.hooks.finishModules.tap(this.constructor.name, (modules) => {
         // Resolve all symlinks/junctions to real paths. Siso doesn't handle
         // junctions on Windows well, so we need to resolve them here.
         const absoluteDepsPaths = Array.from(modules)
-          .filter(module => module.resource)
-          .map(module => fs.realpathSync(module.resource))
-        const depfileContent = generateDepfileContent(this.options.depfileSourceName, absoluteDepsPaths)
+          .filter((module) => module.resource)
+          .map((module) => fs.realpathSync(module.resource))
+        const depfileContent = generateDepfileContent(
+          this.options.depfileSourceName,
+          absoluteDepsPaths,
+        )
         writeDepfileContentSync(this.options.depfilePath, depfileContent)
       })
     })
   }
 }
 
-module.exports = GenerateDepfilePlugin
+export default GenerateDepfilePlugin

@@ -13,6 +13,9 @@ import {
 import { loadTimeData } from '//resources/js/load_time_data.js'
 
 import {
+  ChangePasswordClientErrorCode,
+  ChangePasswordError,
+  ChangePasswordServerErrorCode,
   LoginClientErrorCode,
   LoginError,
   LoginServerErrorCode,
@@ -42,11 +45,51 @@ class FreezeWhenDirective extends AsyncDirective {
 
 export const freezeWhen = directive(FreezeWhenDirective)
 
+// Focuses a <leo-input>'s underlying native <input>.
+// On iOS WebKit, focusing via the shadow root's delegatesFocus leaves the
+// caret painted behind the placeholder (no selection is established).
+// Setting an explicit (empty) selection range forces WebKit to lay the caret
+// out correctly.
+export function focusLeoInput(leoInput: Element | null | undefined) {
+  const input = leoInput?.shadowRoot?.querySelector('input')
+  if (!input) {
+    // Fall back to host focus if the inner input isn't available yet.
+    ;(leoInput as HTMLElement | null | undefined)?.focus()
+    return
+  }
+  input.focus()
+  input.setSelectionRange(input.value.length, input.value.length)
+}
+
 export type Error =
+  | { kind: 'changePassword'; details: ChangePasswordError }
   | { kind: 'login'; details: LoginError }
   | { kind: 'register'; details: RegisterError }
   | { kind: 'resendConfirmationEmail'; details: ResendConfirmationEmailError }
   | { kind: 'resetPassword'; details: ResetPasswordError }
+
+const CHANGE_PASSWORD_CLIENT_ERROR_STRINGS: Partial<
+  Record<ChangePasswordClientErrorCode, string>
+> = {}
+
+const CHANGE_PASSWORD_SERVER_ERROR_STRINGS: Partial<
+  Record<ChangePasswordServerErrorCode, string>
+> = {
+  [ChangePasswordServerErrorCode.kTooManyVerifications]:
+    BraveAccountStrings.BRAVE_ACCOUNT_REGISTER_TOO_MANY_VERIFICATIONS,
+  [ChangePasswordServerErrorCode.kDailyVerificationLimitReachedForEmail]:
+    BraveAccountStrings.BRAVE_ACCOUNT_DAILY_VERIFICATION_LIMIT_REACHED_FOR_EMAIL,
+  [ChangePasswordServerErrorCode.kVerificationNotFoundOrInvalidIdOrCode]:
+    BraveAccountStrings.BRAVE_ACCOUNT_PASSWORD_RESET_VERIFICATION_NOT_FOUND_OR_INVALID_ID_OR_CODE,
+  [ChangePasswordServerErrorCode.kEmailAlreadyVerified]:
+    BraveAccountStrings.BRAVE_ACCOUNT_PASSWORD_RESET_EMAIL_ALREADY_VERIFIED,
+  [ChangePasswordServerErrorCode.kMaximumCodeVerificationAttemptsExceeded]:
+    BraveAccountStrings.BRAVE_ACCOUNT_PASSWORD_RESET_MAXIMUM_CODE_VERIFICATION_ATTEMPTS_EXCEEDED,
+  [ChangePasswordServerErrorCode.kInvalidVerificationCode]:
+    BraveAccountStrings.BRAVE_ACCOUNT_REGISTER_INVALID_VERIFICATION_CODE,
+  [ChangePasswordServerErrorCode.kTokenHasExpired]:
+    BraveAccountStrings.BRAVE_ACCOUNT_RESEND_CONFIRMATION_EMAIL_TOKEN_HAS_EXPIRED,
+}
 
 const LOGIN_CLIENT_ERROR_STRINGS: Partial<
   Record<LoginClientErrorCode, string>
@@ -87,6 +130,10 @@ const REGISTER_SERVER_ERROR_STRINGS: Partial<
     BraveAccountStrings.BRAVE_ACCOUNT_REGISTER_INVALID_VERIFICATION_CODE,
   [RegisterServerErrorCode.kRegistrationVerificationAlreadyPendingForThisEmail]:
     BraveAccountStrings.BRAVE_ACCOUNT_REGISTER_REGISTRATION_VERIFICATION_ALREADY_PENDING_FOR_THIS_EMAIL,
+  [RegisterServerErrorCode.kDailyVerificationLimitReachedForEmail]:
+    BraveAccountStrings.BRAVE_ACCOUNT_DAILY_VERIFICATION_LIMIT_REACHED_FOR_EMAIL,
+  [RegisterServerErrorCode.kTokenHasExpired]:
+    BraveAccountStrings.BRAVE_ACCOUNT_RESEND_CONFIRMATION_EMAIL_TOKEN_HAS_EXPIRED,
 }
 
 const RESEND_CONFIRMATION_EMAIL_CLIENT_ERROR_STRINGS: Partial<
@@ -135,11 +182,13 @@ const RESET_PASSWORD_SERVER_ERROR_STRINGS: Partial<
 
 function getErrorMessageImpl<
   ClientErrorCode extends
+    | ChangePasswordClientErrorCode
     | LoginClientErrorCode
     | RegisterClientErrorCode
     | ResendConfirmationEmailClientErrorCode
     | ResetPasswordClientErrorCode,
   ServerErrorCode extends
+    | ChangePasswordServerErrorCode
     | LoginServerErrorCode
     | RegisterServerErrorCode
     | ResendConfirmationEmailServerErrorCode
@@ -188,6 +237,12 @@ function getErrorMessageImpl<
 
 function getErrorMessage(error: Error): string {
   switch (error.kind) {
+    case 'changePassword':
+      return getErrorMessageImpl(
+        CHANGE_PASSWORD_CLIENT_ERROR_STRINGS,
+        CHANGE_PASSWORD_SERVER_ERROR_STRINGS,
+        error.details,
+      )
     case 'login':
       return getErrorMessageImpl(
         LOGIN_CLIENT_ERROR_STRINGS,

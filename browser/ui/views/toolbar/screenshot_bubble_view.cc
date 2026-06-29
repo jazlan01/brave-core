@@ -32,6 +32,7 @@ namespace {
 constexpr int kBubbleWidth = 280;
 constexpr int kRowSpacing = 8;
 constexpr int kIconSize = 16;
+constexpr int kOuterPadding = 24;
 
 }  // namespace
 
@@ -52,7 +53,7 @@ std::unique_ptr<views::BubbleDialogModelHost> ShowScreenshotBubble(
           l10n_util::GetStringUTF16(IDS_BRAVE_SCREENSHOT_VISIBLE_AREA)));
   visible_btn->SetImageModel(
       views::Button::ButtonState::STATE_NORMAL,
-      ui::ImageModel::FromVectorIcon(kLeoScreenshotIcon,
+      ui::ImageModel::FromVectorIcon(kLeoScreenshotViewportIcon,
                                      ui::kColorButtonForeground, kIconSize));
   visible_btn->SetEnabled(can_capture);
 
@@ -70,6 +71,27 @@ std::unique_ptr<views::BubbleDialogModelHost> ShowScreenshotBubble(
       base::Unretained(web_contents), base::Unretained(controller),
       base::Unretained(visible_btn)));
 
+  auto* selected_btn =
+      container->AddChildView(std::make_unique<views::MdTextButton>(
+          views::Button::PressedCallback(),
+          l10n_util::GetStringUTF16(IDS_BRAVE_SCREENSHOT_SELECTED_AREA)));
+  selected_btn->SetImageModel(
+      views::Button::ButtonState::STATE_NORMAL,
+      ui::ImageModel::FromVectorIcon(kLeoScreenshotIcon,
+                                     ui::kColorButtonForeground, kIconSize));
+  selected_btn->SetEnabled(can_capture);
+
+  selected_btn->SetCallback(base::BindRepeating(
+      [](content::WebContents* wc, ScreenshotController* c,
+         views::Button* btn) {
+        btn->SetCallback(views::Button::PressedCallback());
+        btn->GetWidget()->CloseWithReason(
+            views::Widget::ClosedReason::kUnspecified);
+        c->CaptureSelectedArea(wc, base::DoNothing());
+      },
+      base::Unretained(web_contents), base::Unretained(controller),
+      base::Unretained(selected_btn)));
+
 #if BUILDFLAG(ENABLE_PRINT_PREVIEW)
   auto* full_btn =
       container->AddChildView(std::make_unique<views::MdTextButton>(
@@ -77,7 +99,7 @@ std::unique_ptr<views::BubbleDialogModelHost> ShowScreenshotBubble(
           l10n_util::GetStringUTF16(IDS_BRAVE_SCREENSHOT_FULL_PAGE)));
   full_btn->SetImageModel(
       views::Button::ButtonState::STATE_NORMAL,
-      ui::ImageModel::FromVectorIcon(kLeoFullscreenOnIcon,
+      ui::ImageModel::FromVectorIcon(kLeoWindowFocusIcon,
                                      ui::kColorButtonForeground, kIconSize));
   full_btn->SetEnabled(can_capture);
 
@@ -107,7 +129,9 @@ std::unique_ptr<views::BubbleDialogModelHost> ShowScreenshotBubble(
   auto bubble = std::make_unique<views::BubbleDialogModelHost>(
       std::move(model), anchor, views::BubbleBorder::TOP_RIGHT);
   bubble->set_fixed_width(kBubbleWidth);
-  bubble->set_margins(gfx::Insets::TLBR(0, 16, 16, 16));
+  bubble->set_frame_margins(views::DialogDelegate::FrameMarginsParams{
+      .contents = gfx::Insets(kOuterPadding)});
+  bubble->set_margins(gfx::Insets::VH(kOuterPadding, 0));
 
   return bubble;
 }

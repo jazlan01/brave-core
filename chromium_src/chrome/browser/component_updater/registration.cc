@@ -16,7 +16,7 @@
 #include "brave/browser/brave_browser_process.h"
 #include "brave/components/brave_user_agent/browser/brave_user_agent_component_installer.h"
 #include "brave/components/brave_wallet/common/buildflags/buildflags.h"
-#include "brave/components/local_ai/core/local_models_updater.h"
+#include "brave/components/local_ai/buildflags/buildflags.h"
 #include "brave/components/p3a/component_installer.h"
 #include "brave/components/p3a/p3a_service.h"
 #include "brave/components/psst/buildflags/buildflags.h"
@@ -25,7 +25,7 @@
 #include "chrome/browser/component_updater/component_updater_utils.h"
 
 #if BUILDFLAG(ENABLE_PSST)
-#include "brave/components/psst/browser/core/psst_component_installer.h"
+#include "brave/components/psst/core/browser/psst_component_installer.h"
 #endif
 
 #if BUILDFLAG(IS_ANDROID)
@@ -35,6 +35,11 @@
 #if BUILDFLAG(ENABLE_BRAVE_WALLET)
 #include "brave/components/brave_wallet/browser/wallet_data_files_installer.h"
 #endif  // BUILDFLAG(ENABLE_BRAVE_WALLET)
+
+#if BUILDFLAG(ENABLE_LOCAL_AI)
+#include "brave/components/local_ai/core/local_models_updater.h"
+#include "brave/components/local_ai/core/on_device_speech_models_component_installer.h"
+#endif
 
 namespace component_updater {
 
@@ -55,7 +60,10 @@ void RegisterComponentsForUpdate() {
   RegisterZxcvbnDataComponent(cus);
 #endif  // BUILDFLAG(IS_ANDROID)
   brave_user_agent::RegisterBraveUserAgentComponent(cus);
+#if BUILDFLAG(ENABLE_LOCAL_AI)
   local_ai::ManageLocalModelsComponentRegistration(cus);
+  local_ai::RegisterOnDeviceSpeechModelsComponent(cus);
+#endif
   RegisterQueryFilterComponent(cus);
 }
 

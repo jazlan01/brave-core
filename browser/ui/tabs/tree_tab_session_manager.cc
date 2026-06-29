@@ -9,33 +9,22 @@
 #include <string>
 
 #include "base/check.h"
+#include "base/containers/map_util.h"
 #include "base/feature_list.h"
 #include "brave/browser/sessions/brave_session_keys.h"
 #include "brave/browser/ui/tabs/brave_tab_strip_model.h"
 #include "brave/components/tabs/public/tree_tab_node.h"
+#include "brave/components/tabs/public/tree_tab_node_id.h"
 #include "brave/components/tabs/public/tree_tab_node_tab_collection.h"
 #include "chrome/browser/sessions/session_service.h"
 #include "chrome/browser/sessions/session_service_factory.h"
 #include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "components/sessions/content/session_tab_helper.h"
+#include "components/tabs/public/tab_collection.h"
+#include "components/tabs/public/tab_group_tab_collection.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
-
-namespace {
-
-// Finds the nearest TreeTabNodeTabCollection ancestor of |tab| and returns it,
-// or nullptr if the tab is not inside a tree node.
-const tabs::TreeTabNodeTabCollection* GetTreeTabNodeCollection(
-    const tabs::TabInterface* tab) {
-  const tabs::TabCollection* parent = tab->GetParentCollection();
-  if (parent && parent->type() == tabs::TabCollection::Type::TREE_NODE) {
-    return static_cast<const tabs::TreeTabNodeTabCollection*>(parent);
-  }
-  return nullptr;
-}
-
-}  // namespace
 
 TreeTabSessionManager::TreeTabSessionManager(Profile* profile,
                                              TabStripModel* tab_strip_model,
@@ -64,11 +53,11 @@ void TreeTabSessionManager::MaybePopulateTreeTabExtraData(
   auto* tab_interface = brave_tab_strip_model->GetTabAtIndex(index);
   CHECK(tab_interface);
 
-  const auto* tree_collection = GetTreeTabNodeCollection(tab_interface);
+  const auto* tree_collection =
+      tabs::TreeTabNodeTabCollection::GetNearestTreeTabNodeCollection(
+          tab_interface);
   if (!tree_collection) {
-    // In case the tab is under group or split, tree_collection can be null.
-    // TODO(https://github.com/brave/brave-browser/issues/49792): Add support
-    // for tabs in groups or splits.
+    // If a tab is pinned, this can be null.
     return;
   }
 
@@ -78,6 +67,38 @@ void TreeTabSessionManager::MaybePopulateTreeTabExtraData(
       parent_id ? parent_id->ToString() : "";
   (*extra_data)[kBraveTreeNodeCollapsedKey] =
       tree_collection->node().collapsed() ? "1" : "0";
+}
+
+void TreeTabSessionManager::MaybeRestoreTabTreeHierarchy(
+    content::WebContents* restored_web_contents,
+    const std::map<std::string, std::string>& extra_data) {
+  if (!base::FeatureList::IsEnabled(tabs::kBraveTreeTab)) {
+    return;
+  }
+
+  auto* brave_tab_strip_model =
+      static_cast<BraveTabStripModel*>(tab_strip_model_);
+  if (!brave_tab_strip_model->tree_model()) {
+    return;
+  }
+
+  // Locate the restored tab in the strip.
+  auto* restored_tab =
+      brave_tab_strip_model->GetTabForWebContents(restored_web_contents);
+  CHECK(restored_tab);
+
+  tabs::TreeTabNodeTabCollection* child_collection =
+      tabs::TreeTabNodeTabCollection::GetTreeTabNodeCollection(restored_tab);
+  if (!child_collection) {
+    if (restored_tab->GetGroup()) {
+      MaybeRestoreGroupTreeHierarchy(restored_tab, extra_data);
+    } else if (restored_tab->GetSplit()) {
+      MaybeRestoreSplitTreeHierarchy(restored_tab, extra_data);
+    }
+    return;
+  }
+
+  RestoreTreeTabNodeCollection(child_collection, extra_data);
 }
 
 void TreeTabSessionManager::OnTreeTabChanged(const TreeTabChange& change) {
@@ -124,16 +145,13 @@ void TreeTabSessionManager::UpdateTreeTabSessionDataForNode(
     CHECK(session_helper);
 
     const SessionID tab_id = session_helper->session_id();
-    const auto* tree_coll = GetTreeTabNodeCollection(tab_iface);
+    const auto* tree_coll =
+        tabs::TreeTabNodeTabCollection::GetNearestTreeTabNodeCollection(
+            tab_iface);
     if (!tree_coll) {
-      // TODO(https://github.com/brave/brave-browser/issues/49792): Add support
-      // Tabs are in the groups or splits. In this case, we don't do anything
-      // for now.
       continue;
     }
 
-    CHECK_EQ(tree_coll->current_value_type(),
-             tabs::TreeTabNodeTabCollection::CurrentValueType::kTab);
     session_service->AddTabExtraData(session_id_, tab_id, kBraveTreeNodeIdKey,
                                      node_id_str);
     session_service->AddTabExtraData(session_id_, tab_id,
@@ -154,11 +172,10 @@ void TreeTabSessionManager::UpdateTreeTabCollapsedState(
 
   // Only the primary (kTab) tab of a node carries the collapsed state key.
   for (const tabs::TabInterface* tab_iface : node.GetTabs()) {
-    const auto* tree_coll = GetTreeTabNodeCollection(tab_iface);
+    const auto* tree_coll =
+        tabs::TreeTabNodeTabCollection::GetNearestTreeTabNodeCollection(
+            tab_iface);
     if (!tree_coll) {
-      // TODO(https://github.com/brave/brave-browser/issues/49792): Add support
-      // Tabs are in the groups or splits. In this case, we don't do anything
-      // for now.
       continue;
     }
 
@@ -172,4 +189,102 @@ void TreeTabSessionManager::UpdateTreeTabCollapsedState(
                                      kBraveTreeNodeCollapsedKey,
                                      node.collapsed() ? "1" : "0");
   }
+}
+
+void TreeTabSessionManager::MaybeRestoreGroupTreeHierarchy(
+    tabs::TabInterface* restored_tab,
+    const std::map<std::string, std::string>& extra_data) {
+  auto* parent_collection = restored_tab->GetParentCollection();
+  CHECK_EQ(parent_collection->type(), tabs::TabCollection::Type::GROUP);
+
+  auto* grand_parent_collection = parent_collection->GetParentCollection();
+  CHECK(grand_parent_collection);
+  CHECK_EQ(grand_parent_collection->type(),
+           tabs::TabCollection::Type::TREE_NODE);
+
+  RestoreTreeTabNodeCollection(
+      static_cast<tabs::TreeTabNodeTabCollection*>(grand_parent_collection),
+      extra_data);
+}
+
+void TreeTabSessionManager::MaybeRestoreSplitTreeHierarchy(
+    tabs::TabInterface* restored_tab,
+    const std::map<std::string, std::string>& extra_data) {
+  auto* parent_collection = restored_tab->GetParentCollection();
+  CHECK_EQ(parent_collection->type(), tabs::TabCollection::Type::SPLIT);
+
+  auto* tree_collection = parent_collection->GetParentCollection();
+  CHECK(tree_collection);
+  if (tree_collection->type() == tabs::TabCollection::Type::GROUP) {
+    // Split can be a child of group. Maybe we should try traverse up one more
+    // level.
+    tree_collection = tree_collection->GetParentCollection();
+  }
+  CHECK_EQ(tree_collection->type(), tabs::TabCollection::Type::TREE_NODE);
+
+  RestoreTreeTabNodeCollection(
+      static_cast<tabs::TreeTabNodeTabCollection*>(tree_collection),
+      extra_data);
+}
+
+void TreeTabSessionManager::RestoreTreeTabNodeCollection(
+    tabs::TreeTabNodeTabCollection* tree_coll,
+    const std::map<std::string, std::string>& extra_data) {
+  auto* node_id = base::FindOrNull(extra_data, kBraveTreeNodeIdKey);
+  if (!node_id || node_id->empty()) {
+    // Can be pinned tab.
+    return;
+  }
+
+  auto token = base::Token::FromString(*node_id);
+  if (!token) {
+    return;
+  }
+
+  auto restored_node_id = tree_tab::TreeTabNodeId::FromRawToken(token.value());
+  if (tree_coll->node().id() == restored_node_id) {
+    return;  // Already has the correct node ID.
+  }
+
+  tree_coll->SetNodeId(restored_node_id);
+
+  // Only reparent if the saved data describes a child node (non-empty parent).
+  auto* parent_id = base::FindOrNull(extra_data, kBraveTreeParentNodeIdKey);
+  if (!parent_id || parent_id->empty()) {
+    return;
+  }
+  const std::string& target_parent_node_id = *parent_id;
+
+  // Scan the strip to find the live TreeTabNodeTabCollection whose node ID
+  // matches the saved parent node ID. Because the parent tab was not closed
+  // (only the child was), its node ID is stable within this session.
+  auto* brave_tab_strip_model =
+      static_cast<BraveTabStripModel*>(tab_strip_model_);
+  tabs::TreeTabNodeTabCollection* parent_collection = nullptr;
+  for (int i = 0; i < brave_tab_strip_model->count(); ++i) {
+    auto* candidate = brave_tab_strip_model->GetTabAtIndex(i);
+    auto* tree_collection =
+        tabs::TreeTabNodeTabCollection::GetNearestTreeTabNodeCollection(
+            candidate);
+    if (!tree_collection) {
+      continue;
+    }
+    if (tree_collection->node().id().ToString() == target_parent_node_id) {
+      parent_collection = tree_collection;
+      break;
+    }
+  }
+
+  if (!parent_collection) {
+    return;  // Parent tab was also closed; nothing to reparent under.
+  }
+
+  if (tree_coll->GetParentCollection() == parent_collection) {
+    return;  // Already correctly nested (shouldn't happen, but guard anyway).
+  }
+
+  auto* current_parent = tree_coll->GetParentCollection();
+  auto owned = current_parent->MaybeRemoveCollection(tree_coll);
+  parent_collection->AddCollection(std::move(owned),
+                                   parent_collection->ChildCount());
 }

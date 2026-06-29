@@ -18,9 +18,9 @@
 #include "base/test/test_future.h"
 #include "brave/components/brave_wallet/browser/brave_wallet_service.h"
 #include "brave/components/brave_wallet/browser/brave_wallet_utils.h"
-#include "brave/components/brave_wallet/browser/cardano/cardano_cip30_serializer.h"
 #include "brave/components/brave_wallet/browser/cardano/cardano_test_utils.h"
 #include "brave/components/brave_wallet/browser/cardano/cardano_transaction_serializer.h"
+#include "brave/components/brave_wallet/browser/cardano/cardano_tx_decoder.h"
 #include "brave/components/brave_wallet/browser/keyring_service.h"
 #include "brave/components/brave_wallet/browser/pref_names.h"
 #include "brave/components/brave_wallet/browser/test_utils.h"
@@ -43,14 +43,23 @@ namespace brave_wallet {
 
 namespace {
 
-cardano_rpc::UnspentOutputs UtxosToVector(auto& map) {
-  cardano_rpc::UnspentOutputs result;
+std::vector<std::string> EncodedUtxosToVector(const auto& map) {
+  std::vector<std::string> result;
   for (const auto& by_addr : map) {
     for (const auto& utxo : by_addr.second) {
-      result.push_back(
+      auto unspent_output =
           cardano_rpc::UnspentOutput::FromBlockfrostApiValue(
               *CardanoAddress::FromString(by_addr.first), utxo.Clone())
-              .value());
+              .value();
+
+      result.push_back(base::HexEncodeLower(
+          CardanoTxDecoder::EncodeUtxo(
+              CardanoTxDecoder::SerializableTxInput(
+                  unspent_output.tx_hash, unspent_output.output_index),
+              CardanoTxDecoder::SerializableTxOutput(
+                  unspent_output.address_to.ToCborBytes(),
+                  unspent_output.coin_value))
+              .value()));
     }
   }
   return result;
@@ -174,7 +183,7 @@ class CardanoApiImplTest : public testing::Test {
       input.utxo_outpoint.txid = test::HexToArray<32>(
           "a7b4c1021fa375a4fccb1ac1b3bb01743b3989b5eb732cc6240add8c71edb925");
       input.utxo_outpoint.index = 0;
-      input.utxo_value = 34451133;
+      input.coin_value.lovelace_amount = 34451133;
       tx.AddInput(std::move(input));
     }
 
@@ -189,7 +198,7 @@ class CardanoApiImplTest : public testing::Test {
       input.utxo_outpoint.txid = test::HexToArray<32>(
           "a7b4c1021fa375a4fccb1ac1b3bb01743b3989b5eb732cc6240add8c71edb925");
       input.utxo_outpoint.index = 10;
-      input.utxo_value = 5000000;
+      input.coin_value.lovelace_amount = 5000000;
       tx.AddInput(std::move(input));
     }
 
@@ -204,7 +213,7 @@ class CardanoApiImplTest : public testing::Test {
       input.utxo_outpoint.txid = test::HexToArray<32>(
           "a7b4c1021fa375a4fccb1ac1b3bb01743b3989b5eb732cc6240add8c71edb925");
       input.utxo_outpoint.index = 1;
-      input.utxo_value = 34451133;
+      input.coin_value.lovelace_amount = 34451133;
       tx.AddInput(std::move(input));
     }
 
@@ -213,21 +222,21 @@ class CardanoApiImplTest : public testing::Test {
         "addr1q9zwt6rfn2e3mc63hesal6muyg807cwjnkwg3j5azkvmxm0tyqeyc8eu034zzmj4z"
         "53"
         "l7lh5u7z08l0rvp49ht88s5uskl6tsl"));
-    output1.amount = 10000000;
+    output1.coin_value.lovelace_amount = 10000000;
     tx.AddOutput(std::move(output1));
 
     CardanoTransaction::TxOutput output2(*CardanoAddress::FromString(
         "addr1q8s90ehlgwwkq637d3r6qzuxwu6qnprphqadn9pjg2mtcp9hkfmyv4zfhyefvjmpw"
         "w7"
         "f7w9gwem3x6gcm3ulw3kpcgws9sgrhg"));
-    output2.amount = 24282816;
+    output2.coin_value.lovelace_amount = 24282816;
     output2.type = CardanoTransaction::TxOutputType::kChange;
     tx.AddOutput(std::move(output2));
 
     // Change
     CardanoTransaction::TxOutput output3(
         *CardanoAddress::FromString(input_address_1->address_string));
-    output3.amount = 24282816;
+    output3.coin_value.lovelace_amount = 24282816;
     output3.type = CardanoTransaction::TxOutputType::kChange;
     tx.AddOutput(std::move(output3));
 
@@ -465,8 +474,6 @@ TEST_F(CardanoApiImplTest, MethodReturnsError_WhenNoPermission) {
             return std::vector<std::string>();
           });
 
-  EXPECT_CALL(*delegate(), WalletInteractionDetected()).Times(0);
-
   {
     base::test::TestFuture<int32_t, mojom::CardanoProviderErrorBundlePtr>
         future;
@@ -596,8 +603,6 @@ TEST_F(CardanoApiImplTest, MethodReturnsError_WhenAccountChanged) {
             return std::vector<std::string>(
                 {GetAccountPermissionIdentifier(new_account)});
           });
-
-  EXPECT_CALL(*delegate(), WalletInteractionDetected()).Times(0);
 
   {
     base::test::TestFuture<int32_t, mojom::CardanoProviderErrorBundlePtr>
@@ -737,8 +742,6 @@ TEST_F(CardanoApiImplTest, MethodReturnsSuccess_WhenHasPermission) {
                 {added_account->account_id->unique_key});
           });
   {
-    EXPECT_CALL(*delegate(), WalletInteractionDetected()).Times(1);
-
     base::test::TestFuture<int32_t, mojom::CardanoProviderErrorBundlePtr>
         future;
     provider()->GetNetworkId(future.GetCallback());
@@ -747,8 +750,6 @@ TEST_F(CardanoApiImplTest, MethodReturnsSuccess_WhenHasPermission) {
   }
 
   {
-    EXPECT_CALL(*delegate(), WalletInteractionDetected()).Times(1);
-
     base::test::TestFuture<const std::optional<std::vector<std::string>>&,
                            mojom::CardanoProviderErrorBundlePtr>
         future;
@@ -758,8 +759,6 @@ TEST_F(CardanoApiImplTest, MethodReturnsSuccess_WhenHasPermission) {
   }
 
   {
-    EXPECT_CALL(*delegate(), WalletInteractionDetected()).Times(1);
-
     base::test::TestFuture<const std::optional<std::vector<std::string>>&,
                            mojom::CardanoProviderErrorBundlePtr>
         future;
@@ -769,8 +768,6 @@ TEST_F(CardanoApiImplTest, MethodReturnsSuccess_WhenHasPermission) {
   }
 
   {
-    EXPECT_CALL(*delegate(), WalletInteractionDetected()).Times(1);
-
     base::test::TestFuture<const std::optional<std::string>&,
                            mojom::CardanoProviderErrorBundlePtr>
         future;
@@ -780,8 +777,6 @@ TEST_F(CardanoApiImplTest, MethodReturnsSuccess_WhenHasPermission) {
   }
 
   {
-    EXPECT_CALL(*delegate(), WalletInteractionDetected()).Times(1);
-
     base::test::TestFuture<const std::optional<std::vector<std::string>>&,
                            mojom::CardanoProviderErrorBundlePtr>
         future;
@@ -791,8 +786,6 @@ TEST_F(CardanoApiImplTest, MethodReturnsSuccess_WhenHasPermission) {
   }
 
   {
-    EXPECT_CALL(*delegate(), WalletInteractionDetected()).Times(1);
-
     base::test::TestFuture<const std::optional<std::string>&,
                            mojom::CardanoProviderErrorBundlePtr>
         future;
@@ -803,8 +796,6 @@ TEST_F(CardanoApiImplTest, MethodReturnsSuccess_WhenHasPermission) {
   }
 
   {
-    EXPECT_CALL(*delegate(), WalletInteractionDetected()).Times(1);
-
     base::test::TestFuture<const std::optional<std::vector<std::string>>&,
                            mojom::CardanoProviderErrorBundlePtr>
         future;
@@ -814,8 +805,6 @@ TEST_F(CardanoApiImplTest, MethodReturnsSuccess_WhenHasPermission) {
   }
 
   {
-    EXPECT_CALL(*delegate(), WalletInteractionDetected()).Times(1);
-
     base::test::TestFuture<const std::optional<std::vector<std::string>>&,
                            mojom::CardanoProviderErrorBundlePtr>
         future;
@@ -831,11 +820,26 @@ TEST_F(CardanoApiImplTest, GetBalance) {
   auto added_account = AddAccount();
   EXPECT_TRUE(added_account);
 
-  test_rpc_service()->AddUtxo(brave_wallet_service()
-                                  ->GetCardanoWalletService()
-                                  ->GetChangeAddress(added_account->account_id)
-                                  ->address_string,
-                              100000);
+  auto address = brave_wallet_service()
+                     ->GetCardanoWalletService()
+                     ->GetChangeAddress(added_account->account_id)
+                     ->address_string;
+
+  test_rpc_service()->AddUtxo(address, 100000);
+  test_rpc_service()->AddUtxo(address, 200000,
+                              {{GetMockTokenId("foo"), 100000u}});
+  test_rpc_service()->AddUtxo(address, 300000,
+                              {{GetMockTokenId("foo"), 100000u},  //
+                               {GetMockTokenId("bar"), 123u}});
+  test_rpc_service()->AddUtxo(address, 400000,
+                              {{GetMockTokenId("foo"), 100000u},
+                               {GetMockTokenId("bar"), 123u},
+                               {GetMockTokenId("baz"), 1u}});
+  test_rpc_service()->AddUtxo(address, 500000,
+                              {{GetMockTokenId("foo"), 100000u},
+                               {GetMockTokenId("bar"), 123u},
+                               {GetMockTokenId("baz"), UINT64_MAX / 2},
+                               {GetMockTokenId("qux"), 7u}});
 
   ON_CALL(*delegate(), GetAllowedAccounts(_, _))
       .WillByDefault(
@@ -847,16 +851,22 @@ TEST_F(CardanoApiImplTest, GetBalance) {
                 {added_account->account_id->unique_key});
           });
   {
-    EXPECT_CALL(*delegate(), WalletInteractionDetected()).Times(1);
-
     base::test::TestFuture<const std::optional<std::string>&,
                            mojom::CardanoProviderErrorBundlePtr>
         future;
     provider()->GetBalance(future.GetCallback());
     auto [balance, error] = future.Take();
     EXPECT_FALSE(error);
-    EXPECT_EQ(balance.value(),
-              CardanoCip30Serializer::SerializeAmount(100000u));
+    EXPECT_EQ(
+        balance.value(),
+        base::HexEncodeLower(
+            CardanoTxDecoder::EncodeCoinValue(
+                cardano_rpc::CoinValue(
+                    1500000u, {{GetMockTokenId("foo"), 4 * 100000u},
+                               {GetMockTokenId("bar"), 3 * 123u},
+                               {GetMockTokenId("baz"), 1u + UINT64_MAX / 2},
+                               {GetMockTokenId("qux"), 7u}}))
+                .value()));
   }
 }
 
@@ -878,8 +888,6 @@ TEST_F(CardanoApiImplTest, GetBalance_Error) {
                 {added_account->account_id->unique_key});
           });
   {
-    EXPECT_CALL(*delegate(), WalletInteractionDetected()).Times(1);
-
     base::test::TestFuture<const std::optional<std::string>&,
                            mojom::CardanoProviderErrorBundlePtr>
         future;
@@ -907,8 +915,6 @@ TEST_F(CardanoApiImplTest, GetUtxos_Error) {
                 {added_account->account_id->unique_key});
           });
   {
-    EXPECT_CALL(*delegate(), WalletInteractionDetected()).Times(1);
-
     base::test::TestFuture<const std::optional<std::vector<std::string>>&,
                            mojom::CardanoProviderErrorBundlePtr>
         future;
@@ -924,33 +930,28 @@ TEST_F(CardanoApiImplTest, GetUtxos) {
   auto added_account = AddAccount();
   EXPECT_TRUE(added_account);
 
-  test_rpc_service()->AddUtxo(brave_wallet_service()
-                                  ->GetCardanoWalletService()
-                                  ->GetChangeAddress(added_account->account_id)
-                                  ->address_string,
-                              100000);
-  test_rpc_service()->AddUtxo(brave_wallet_service()
-                                  ->GetCardanoWalletService()
-                                  ->GetChangeAddress(added_account->account_id)
-                                  ->address_string,
-                              200000);
-  test_rpc_service()->AddUtxo(brave_wallet_service()
-                                  ->GetCardanoWalletService()
-                                  ->GetChangeAddress(added_account->account_id)
-                                  ->address_string,
-                              300000);
-  test_rpc_service()->AddUtxo(brave_wallet_service()
-                                  ->GetCardanoWalletService()
-                                  ->GetChangeAddress(added_account->account_id)
-                                  ->address_string,
-                              400000);
-  test_rpc_service()->AddUtxo(brave_wallet_service()
-                                  ->GetCardanoWalletService()
-                                  ->GetChangeAddress(added_account->account_id)
-                                  ->address_string,
-                              500000);
+  auto address = brave_wallet_service()
+                     ->GetCardanoWalletService()
+                     ->GetChangeAddress(added_account->account_id)
+                     ->address_string;
 
-  auto utxos_as_vec = UtxosToVector(test_rpc_service()->utxo_map());
+  test_rpc_service()->AddUtxo(address, 100000);
+  test_rpc_service()->AddUtxo(address, 200000,
+                              {{GetMockTokenId("foo"), 100000u}});
+  test_rpc_service()->AddUtxo(address, 300000,
+                              {{GetMockTokenId("foo"), 100000u},  //
+                               {GetMockTokenId("bar"), 123u}});
+  test_rpc_service()->AddUtxo(address, 400000,
+                              {{GetMockTokenId("foo"), 100000u},
+                               {GetMockTokenId("bar"), 123u},
+                               {GetMockTokenId("baz"), 1u}});
+  test_rpc_service()->AddUtxo(address, 500000,
+                              {{GetMockTokenId("foo"), 100000u},
+                               {GetMockTokenId("bar"), 123u},
+                               {GetMockTokenId("baz"), UINT64_MAX / 2},
+                               {GetMockTokenId("qux"), 7u}});
+
+  auto utxos_as_vec = EncodedUtxosToVector(test_rpc_service()->utxo_map());
   auto utxos_span = base::span(utxos_as_vec);
 
   ON_CALL(*delegate(), GetAllowedAccounts(_, _))
@@ -965,46 +966,97 @@ TEST_F(CardanoApiImplTest, GetUtxos) {
 
   // No args
   {
-    EXPECT_CALL(*delegate(), WalletInteractionDetected()).Times(1);
-
     base::test::TestFuture<const std::optional<std::vector<std::string>>&,
                            mojom::CardanoProviderErrorBundlePtr>
         future;
     provider()->GetUtxos(std::nullopt, nullptr, future.GetCallback());
     auto [utxos, error] = future.Take();
 
-    EXPECT_EQ(utxos.value(),
-              CardanoCip30Serializer::SerializeUtxos(
-                  UtxosToVector(test_rpc_service()->utxo_map())));
+    EXPECT_EQ(utxos.value(), utxos_span);
 
     EXPECT_FALSE(error);
   }
 
   // Amount limit
   {
-    EXPECT_CALL(*delegate(), WalletInteractionDetected()).Times(1);
-
     base::test::TestFuture<const std::optional<std::vector<std::string>>&,
                            mojom::CardanoProviderErrorBundlePtr>
         future;
-    provider()->GetUtxos(CardanoCip30Serializer::SerializeAmount(600000u),
-                         nullptr, future.GetCallback());
+    provider()->GetUtxos(
+        base::HexEncodeLower(CardanoTxDecoder::EncodeCoinValue(
+                                 cardano_rpc::CoinValue(600000u, {}))
+                                 .value()),
+        nullptr, future.GetCallback());
     auto [utxos, error] = future.Take();
     EXPECT_TRUE(utxos);
-    EXPECT_EQ(utxos.value(),
-              CardanoCip30Serializer::SerializeUtxos(utxos_span.first(3u)));
+    EXPECT_EQ(utxos.value(), utxos_span.first(3u));
     EXPECT_FALSE(error);
   }
 
   // Amount exceeds
   {
-    EXPECT_CALL(*delegate(), WalletInteractionDetected()).Times(1);
-
     base::test::TestFuture<const std::optional<std::vector<std::string>>&,
                            mojom::CardanoProviderErrorBundlePtr>
         future;
-    provider()->GetUtxos(CardanoCip30Serializer::SerializeAmount(10000000u),
-                         nullptr, future.GetCallback());
+    provider()->GetUtxos(
+        base::HexEncodeLower(CardanoTxDecoder::EncodeCoinValue(
+                                 cardano_rpc::CoinValue(10000000u, {}))
+                                 .value()),
+        nullptr, future.GetCallback());
+    auto [utxos, error] = future.Take();
+    EXPECT_FALSE(utxos);
+    EXPECT_FALSE(error);
+  }
+
+  // Token limit
+  {
+    base::test::TestFuture<const std::optional<std::vector<std::string>>&,
+                           mojom::CardanoProviderErrorBundlePtr>
+        future;
+    provider()->GetUtxos(
+        base::HexEncodeLower(
+            CardanoTxDecoder::EncodeCoinValue(
+                cardano_rpc::CoinValue(10000u,
+                                       {{GetMockTokenId("foo"), 200000u}}))
+                .value()),
+        nullptr, future.GetCallback());
+    auto [utxos, error] = future.Take();
+    EXPECT_TRUE(utxos);
+    EXPECT_EQ(utxos.value(), utxos_span.subspan(1u, 2u));
+    EXPECT_FALSE(error);
+  }
+
+  // Multiple token limit
+  {
+    base::test::TestFuture<const std::optional<std::vector<std::string>>&,
+                           mojom::CardanoProviderErrorBundlePtr>
+        future;
+    provider()->GetUtxos(
+        base::HexEncodeLower(CardanoTxDecoder::EncodeCoinValue(
+                                 cardano_rpc::CoinValue(
+                                     10000u, {{GetMockTokenId("foo"), 200000u},
+                                              {GetMockTokenId("qux"), 7u}}))
+                                 .value()),
+        nullptr, future.GetCallback());
+    auto [utxos, error] = future.Take();
+    EXPECT_TRUE(utxos);
+    EXPECT_EQ(utxos.value(), base::ToVector({utxos_as_vec[1], utxos_as_vec[2],
+                                             utxos_as_vec[4]}));
+    EXPECT_FALSE(error);
+  }
+
+  // Token limit exceeds
+  {
+    base::test::TestFuture<const std::optional<std::vector<std::string>>&,
+                           mojom::CardanoProviderErrorBundlePtr>
+        future;
+    provider()->GetUtxos(
+        base::HexEncodeLower(
+            CardanoTxDecoder::EncodeCoinValue(
+                cardano_rpc::CoinValue(10000u,
+                                       {{GetMockTokenId("foo"), 1000000u}}))
+                .value()),
+        nullptr, future.GetCallback());
     auto [utxos, error] = future.Take();
     EXPECT_FALSE(utxos);
     EXPECT_FALSE(error);
@@ -1012,25 +1064,22 @@ TEST_F(CardanoApiImplTest, GetUtxos) {
 
   // Amount limit with pagination
   {
-    EXPECT_CALL(*delegate(), WalletInteractionDetected()).Times(1);
-
     base::test::TestFuture<const std::optional<std::vector<std::string>>&,
                            mojom::CardanoProviderErrorBundlePtr>
         future;
-    provider()->GetUtxos(CardanoCip30Serializer::SerializeAmount(600000u),
-                         mojom::CardanoProviderPagination::New(1, 2),
-                         future.GetCallback());
+    provider()->GetUtxos(
+        base::HexEncodeLower(CardanoTxDecoder::EncodeCoinValue(
+                                 cardano_rpc::CoinValue(600000u, {}))
+                                 .value()),
+        mojom::CardanoProviderPagination::New(1, 2), future.GetCallback());
     auto [utxos, error] = future.Take();
     EXPECT_TRUE(utxos);
-    EXPECT_EQ(utxos.value(), CardanoCip30Serializer::SerializeUtxos(
-                                 utxos_span.subspan(2u, 1u)));
+    EXPECT_EQ(utxos.value(), utxos_span.subspan(2u, 1u));
     EXPECT_FALSE(error);
   }
 
   // No amount limit with pagination
   {
-    EXPECT_CALL(*delegate(), WalletInteractionDetected()).Times(1);
-
     base::test::TestFuture<const std::optional<std::vector<std::string>>&,
                            mojom::CardanoProviderErrorBundlePtr>
         future;
@@ -1039,15 +1088,12 @@ TEST_F(CardanoApiImplTest, GetUtxos) {
                          future.GetCallback());
     auto [utxos, error] = future.Take();
     EXPECT_TRUE(utxos);
-    EXPECT_EQ(utxos.value(), CardanoCip30Serializer::SerializeUtxos(
-                                 utxos_span.subspan(3u, 1u)));
+    EXPECT_EQ(utxos.value(), utxos_span.subspan(3u, 1u));
     EXPECT_FALSE(error);
   }
 
   // No amount limit with pagination
   {
-    EXPECT_CALL(*delegate(), WalletInteractionDetected()).Times(1);
-
     base::test::TestFuture<const std::optional<std::vector<std::string>>&,
                            mojom::CardanoProviderErrorBundlePtr>
         future;
@@ -1056,15 +1102,12 @@ TEST_F(CardanoApiImplTest, GetUtxos) {
                          future.GetCallback());
     auto [utxos, error] = future.Take();
     EXPECT_TRUE(utxos);
-    EXPECT_EQ(utxos.value(), CardanoCip30Serializer::SerializeUtxos(
-                                 utxos_span.subspan(3u, 1u)));
+    EXPECT_EQ(utxos.value(), utxos_span.subspan(3u, 1u));
     EXPECT_FALSE(error);
   }
 
   // Paginate error
   {
-    EXPECT_CALL(*delegate(), WalletInteractionDetected()).Times(1);
-
     base::test::TestFuture<const std::optional<std::vector<std::string>>&,
                            mojom::CardanoProviderErrorBundlePtr>
         future;
@@ -1079,8 +1122,6 @@ TEST_F(CardanoApiImplTest, GetUtxos) {
 
   // Paginate error
   {
-    EXPECT_CALL(*delegate(), WalletInteractionDetected()).Times(1);
-
     base::test::TestFuture<const std::optional<std::vector<std::string>>&,
                            mojom::CardanoProviderErrorBundlePtr>
         future;
@@ -1096,8 +1137,6 @@ TEST_F(CardanoApiImplTest, GetUtxos) {
 
   // Paginate error - limit is zero
   {
-    EXPECT_CALL(*delegate(), WalletInteractionDetected()).Times(1);
-
     base::test::TestFuture<const std::optional<std::vector<std::string>>&,
                            mojom::CardanoProviderErrorBundlePtr>
         future;
@@ -1111,8 +1150,6 @@ TEST_F(CardanoApiImplTest, GetUtxos) {
 
   // Paginate error - arguments less than 0
   {
-    EXPECT_CALL(*delegate(), WalletInteractionDetected()).Times(1);
-
     base::test::TestFuture<const std::optional<std::vector<std::string>>&,
                            mojom::CardanoProviderErrorBundlePtr>
         future;
@@ -1151,21 +1188,6 @@ TEST_F(CardanoApiImplTest, GetUtxos_NumericOverflow) {
             return std::vector<std::string>(
                 {added_account->account_id->unique_key});
           });
-
-  // Amount exceeds
-  {
-    EXPECT_CALL(*delegate(), WalletInteractionDetected()).Times(1);
-
-    base::test::TestFuture<const std::optional<std::vector<std::string>>&,
-                           mojom::CardanoProviderErrorBundlePtr>
-        future;
-    provider()->GetUtxos(
-        CardanoCip30Serializer::SerializeAmount(UINT64_MAX - 50), nullptr,
-        future.GetCallback());
-    auto [utxos, error] = future.Take();
-    EXPECT_FALSE(utxos);
-    EXPECT_TRUE(error);
-  }
 }
 
 TEST_F(CardanoApiImplTest, SubmitTx_Fails) {
@@ -1186,8 +1208,6 @@ TEST_F(CardanoApiImplTest, SubmitTx_Fails) {
 
   test_rpc_service()->FailNextTransactionSubmission();
   {
-    EXPECT_CALL(*delegate(), WalletInteractionDetected()).Times(1);
-
     base::test::TestFuture<const std::optional<std::string>&,
                            mojom::CardanoProviderErrorBundlePtr>
         future;
@@ -1215,8 +1235,6 @@ TEST_F(CardanoApiImplTest, SubmitTx) {
                 {added_account->account_id->unique_key});
           });
   {
-    EXPECT_CALL(*delegate(), WalletInteractionDetected()).Times(1);
-
     base::test::TestFuture<const std::optional<std::string>&,
                            mojom::CardanoProviderErrorBundlePtr>
         future;
@@ -1244,8 +1262,6 @@ TEST_F(CardanoApiImplTest, SubmitTx_FailsNotHex) {
           });
 
   {
-    EXPECT_CALL(*delegate(), WalletInteractionDetected()).Times(1);
-
     base::test::TestFuture<const std::optional<std::string>&,
                            mojom::CardanoProviderErrorBundlePtr>
         future;
@@ -1349,7 +1365,7 @@ TEST_F(CardanoApiImplTest, SignTx_DeclinedByPartialSignError) {
       *CardanoAddress::FromString(kMockCardanoAddress1));
   input.utxo_outpoint.txid.fill(55u);
   input.utxo_outpoint.index = 0;
-  input.utxo_value = 34451133;
+  input.coin_value.lovelace_amount = 34451133;
   tx.AddInput(std::move(input));
 
   // Add an external witness.
@@ -1422,13 +1438,12 @@ TEST_F(CardanoApiImplTest, SignTx) {
               tx_hash)
           .value());
 
-  CardanoTransaction signed_tx = unsigned_tx;
+  CardanoTxDecoder::SerializableTxWitness witness;
   for (const auto& sign_result : sign_results) {
-    signed_tx.AddWitness(CardanoTransaction::TxWitness(sign_result.pubkey,
-                                                       sign_result.signature));
+    witness.vkey_witness_set.emplace_back(sign_result.signature,
+                                          sign_result.pubkey);
   }
-  auto signed_tx_bytes =
-      *CardanoTransactionSerializer().SerializeTransaction(signed_tx);
+  auto witness_bytes = *CardanoTxDecoder::EncodeWitness(witness);
 
   TestFuture<const std::optional<std::string>&,
              mojom::CardanoProviderErrorBundlePtr>
@@ -1481,7 +1496,7 @@ TEST_F(CardanoApiImplTest, SignTx) {
   auto& api_signed_tx = future.Get<0>();
   auto& error = future.Get<1>();
 
-  EXPECT_EQ(api_signed_tx.value(), base::HexEncode(signed_tx_bytes));
+  EXPECT_EQ(api_signed_tx.value(), base::HexEncode(witness_bytes));
   EXPECT_FALSE(error);
 }
 
@@ -1528,14 +1543,12 @@ TEST_F(CardanoApiImplTest, SignTx_ExistingExternalSignature) {
               tx_hash)
           .value());
 
-  CardanoTransaction signed_tx = unsigned_tx;
+  CardanoTxDecoder::SerializableTxWitness witness;
   for (const auto& sign_result : sign_results) {
-    signed_tx.AddWitness(CardanoTransaction::TxWitness(sign_result.pubkey,
-                                                       sign_result.signature));
+    witness.vkey_witness_set.emplace_back(sign_result.signature,
+                                          sign_result.pubkey);
   }
-
-  auto signed_tx_bytes =
-      *CardanoTransactionSerializer().SerializeTransaction(signed_tx);
+  auto witness_bytes = *CardanoTxDecoder::EncodeWitness(witness);
 
   TestFuture<const std::optional<std::string>&,
              mojom::CardanoProviderErrorBundlePtr>
@@ -1549,7 +1562,78 @@ TEST_F(CardanoApiImplTest, SignTx_ExistingExternalSignature) {
   auto& api_signed_tx = future.Get<0>();
   auto& error = future.Get<1>();
 
-  EXPECT_EQ(api_signed_tx.value(), base::HexEncode(signed_tx_bytes));
+  EXPECT_EQ(api_signed_tx.value(), base::HexEncode(witness_bytes));
+  EXPECT_FALSE(error);
+}
+
+TEST_F(CardanoApiImplTest, SignTx_NoDuplicateSignatures) {
+  CreateWallet();
+  auto added_account = AddAccount();
+
+  ON_CALL(*delegate(), GetAllowedAccounts(_, _))
+      .WillByDefault(
+          [&](mojom::CoinType coin, const std::vector<std::string>& accounts) {
+            EXPECT_EQ(coin, mojom::CoinType::ADA);
+            EXPECT_EQ(accounts.size(), 1u);
+            EXPECT_EQ(accounts[0], added_account->account_id->unique_key);
+            return std::vector<std::string>(
+                {added_account->account_id->unique_key});
+          });
+
+  CardanoTransaction unsigned_tx;
+  SetupUnsignedReferenceTransaction(added_account, unsigned_tx);
+  CardanoTransaction::TxWitness external_witness;
+  external_witness.public_key.fill(2);
+  external_witness.signature.fill(1);
+  unsigned_tx.AddWitness(std::move(external_witness));
+
+  auto unsigned_tx_bytes =
+      *CardanoTransactionSerializer().SerializeTransaction(unsigned_tx);
+
+  auto tx_hash = *CardanoTransactionSerializer().GetTxHash(unsigned_tx);
+  std::vector<CardanoSignMessageResult> sign_results;
+  sign_results.emplace_back(
+      brave_wallet_service()
+          ->keyring_service()
+          ->SignMessageByCardanoKeyring(
+              added_account->account_id,
+              mojom::CardanoKeyId::New(mojom::CardanoKeyRole::kExternal, 0),
+              tx_hash)
+          .value());
+  sign_results.emplace_back(
+      brave_wallet_service()
+          ->keyring_service()
+          ->SignMessageByCardanoKeyring(
+              added_account->account_id,
+              mojom::CardanoKeyId::New(mojom::CardanoKeyRole::kExternal, 1),
+              tx_hash)
+          .value());
+
+  // Add first signature to transaction.
+  unsigned_tx.AddWitness(CardanoTransaction::TxWitness(
+      sign_results[0].pubkey, sign_results[0].signature));
+  unsigned_tx_bytes =
+      *CardanoTransactionSerializer().SerializeTransaction(unsigned_tx);
+
+  // Expect only second signature in signTx result.
+  CardanoTxDecoder::SerializableTxWitness witness;
+  witness.vkey_witness_set.emplace_back(sign_results[1].signature,
+                                        sign_results[1].pubkey);
+  auto witness_bytes = *CardanoTxDecoder::EncodeWitness(witness);
+
+  TestFuture<const std::optional<std::string>&,
+             mojom::CardanoProviderErrorBundlePtr>
+      future;
+
+  SignCardanoTransactionRequestWaiter waiter(brave_wallet_service());
+  provider()->SignTx(base::HexEncode(unsigned_tx_bytes), false,
+                     future.GetCallback());
+  waiter.WaitAndProcess(true);
+
+  auto& api_signed_tx = future.Get<0>();
+  auto& error = future.Get<1>();
+
+  EXPECT_EQ(api_signed_tx.value(), base::HexEncode(witness_bytes));
   EXPECT_FALSE(error);
 }
 
@@ -1574,7 +1658,7 @@ TEST_F(CardanoApiImplTest, SignTx_PartialSign) {
       *CardanoAddress::FromString(kMockCardanoAddress1));
   input.utxo_outpoint.txid.fill(55u);
   input.utxo_outpoint.index = 0;
-  input.utxo_value = 34451133;
+  input.coin_value.lovelace_amount = 34451133;
   unsigned_tx.AddInput(std::move(input));
 
   auto unsigned_tx_bytes =
@@ -1599,14 +1683,12 @@ TEST_F(CardanoApiImplTest, SignTx_PartialSign) {
               tx_hash)
           .value());
 
-  CardanoTransaction signed_tx = unsigned_tx;
+  CardanoTxDecoder::SerializableTxWitness witness;
   for (const auto& sign_result : sign_results) {
-    signed_tx.AddWitness(CardanoTransaction::TxWitness(sign_result.pubkey,
-                                                       sign_result.signature));
+    witness.vkey_witness_set.emplace_back(sign_result.signature,
+                                          sign_result.pubkey);
   }
-
-  auto signed_tx_bytes =
-      *CardanoTransactionSerializer().SerializeTransaction(signed_tx);
+  auto witness_bytes = *CardanoTxDecoder::EncodeWitness(witness);
 
   TestFuture<const std::optional<std::string>&,
              mojom::CardanoProviderErrorBundlePtr>
@@ -1674,7 +1756,7 @@ TEST_F(CardanoApiImplTest, SignTx_PartialSign) {
   auto& api_signed_tx = future.Get<0>();
   auto& error = future.Get<1>();
 
-  EXPECT_EQ(api_signed_tx.value(), base::HexEncode(signed_tx_bytes));
+  EXPECT_EQ(api_signed_tx.value(), base::HexEncode(witness_bytes));
   EXPECT_FALSE(error);
 }
 
