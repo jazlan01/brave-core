@@ -30,6 +30,12 @@ _PAGE_GRAPH_TRACKED_ITEMS = {
     "CanvasRenderingContext2D": {
         "measureText",
     },
+    "CookieStore": {
+        "set",
+        "delete",
+        "get",
+        "getAll",
+    },
     "Document": {
         "cookie",
         "referrer",

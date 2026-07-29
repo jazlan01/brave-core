@@ -142,6 +142,7 @@ enum GraphMLAttrDef {
   kGraphMLAttrDefUnknown,
   kGraphMLAttrDefSize,
   kGraphMLAttrDefHeaders,
+  kGraphMLAttrDefStackTrace,
 };
 
 enum GraphMLAttrType {

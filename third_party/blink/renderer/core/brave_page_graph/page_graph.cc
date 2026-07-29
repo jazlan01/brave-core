@@ -6,6 +6,7 @@
 #include "brave/third_party/blink/renderer/core/brave_page_graph/page_graph.h"
 
 #include <libxml/tree.h>
+#include <libxml/xmlsave.h>
 #include <signal.h>
 
 #include <algorithm>
@@ -26,10 +27,14 @@
 #include "base/check.h"
 #include "base/debug/dump_without_crashing.h"
 #include "base/debug/stack_trace.h"
+#include "base/environment.h"
+#include "base/files/file.h"
+#include "base/files/file_path.h"
 #include "base/json/json_string_value_serializer.h"
 #include "base/logging.h"
 #include "base/no_destructor.h"
 #include "base/notreached.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/time/time.h"
@@ -95,6 +100,7 @@
 #include "brave/third_party/blink/renderer/core/brave_page_graph/requests/request_tracker.h"
 #include "brave/third_party/blink/renderer/core/brave_page_graph/requests/tracked_request.h"
 #include "brave/third_party/blink/renderer/core/brave_page_graph/scripts/script_tracker.h"
+#include "brave/third_party/blink/renderer/core/brave_page_graph/stack_trace_capture.h"
 #include "brave/third_party/blink/renderer/core/brave_page_graph/types.h"
 #include "brave/v8/include/v8-isolate-page-graph-utils.h"
 #include "third_party/blink/public/mojom/script/script_type.mojom-shared.h"
@@ -118,6 +124,7 @@
 #include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/inspector/console_message.h"
 #include "third_party/blink/renderer/core/inspector/identifiers_factory.h"
+#include "third_party/blink/renderer/core/inspector/main_thread_debugger.h"
 #include "third_party/blink/renderer/core/loader/document_loader.h"
 #include "third_party/blink/renderer/core/loader/modulescript/module_script_creation_params.h"
 #include "third_party/blink/renderer/core/loader/resource/script_resource.h"
@@ -340,6 +347,144 @@ static void AssignSecurityOriginToNodeDOMRoot(
 
 }  // namespace
 
+namespace {
+
+// --- Streamed-GraphML serialization helpers, shared by ToGraphML's streamed
+// --- branch and the Tier C record-time event log so both emit byte-identical
+// --- GraphML. ---
+
+// xmlOutputWriteCallback -> base::File. Writes all bytes or fails; libxml aborts
+// the save on a -1 return.
+int WriteFileCallback(void* context, const char* buffer, int len) {
+  auto* out_file = static_cast<base::File*>(context);
+  const bool ok = out_file->WriteAtCurrentPosAndCheck(base::as_bytes(
+      UNSAFE_BUFFERS(base::span(buffer, base::checked_cast<size_t>(len)))));
+  return ok ? len : -1;
+}
+
+// The <graphml>/<graph> container tags are fixed literals so we can leave
+// <graph> open and stream its children one at a time. Every element with
+// dynamic/escaped content (<desc>, <key>, <node>, <edge>) still goes through
+// libxml (xmlSaveTree), so escaping/encoding is byte-identical to the inline
+// path. These mirror exactly what the xmlNewNs / xmlSetProp calls emit.
+constexpr std::string_view kStreamHeaderLiteral =
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+    "<graphml xmlns=\"http://graphml.graphdrawing.org/xmlns\""
+    " xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\""
+    " xsi:schemaLocation=\"http://graphml.graphdrawing.org/xmlns"
+    " http://graphml.graphdrawing.org/xmlns/1.0/graphml.xsd\">\n";
+constexpr std::string_view kStreamGraphOpenLiteral =
+    "<graph id=\"G\" edgedefault=\"directed\">\n";
+constexpr std::string_view kStreamFooterLiteral = "</graph>\n</graphml>\n";
+
+// Flush any buffered libxml output first, then write a fixed literal straight to
+// the file, keeping the two write paths in strict order. Returns false on write
+// failure.
+bool WriteStreamLiteral(xmlSaveCtxtPtr save_ctxt,
+                        base::File& file,
+                        std::string_view literal) {
+  xmlSaveFlush(save_ctxt);
+  return file.WriteAtCurrentPosAndCheck(base::as_bytes(
+      UNSAFE_BUFFERS(base::span(literal.data(), literal.size()))));
+}
+
+// Builds the shared GraphML header DOM: the <graphml> root (+ namespaces), the
+// <desc> block, and every <key> definition, plus an empty <graph id="G"> child
+// returned via out_graph_node. Caller owns the doc (xmlFreeDoc). Used by both
+// ToGraphML paths and the event log so the <key> set never drifts.
+xmlDocPtr BuildStreamedHeaderDoc(brave_page_graph::FrameId frame_id,
+                                 bool is_root,
+                                 const String& source_url,
+                                 int64_t end_ms,
+                                 xmlNodePtr* out_graph_node) {
+  xmlDocPtr doc = xmlNewDoc(BAD_CAST "1.0");
+  xmlNodePtr root = xmlNewNode(nullptr, BAD_CAST "graphml");
+  xmlDocSetRootElement(doc, root);
+  xmlNewNs(root, BAD_CAST "http://graphml.graphdrawing.org/xmlns", nullptr);
+  xmlNsPtr xsi_ns = xmlNewNs(
+      root, BAD_CAST "http://www.w3.org/2001/XMLSchema-instance",
+      BAD_CAST "xsi");
+  xmlNewNsProp(root, xsi_ns, BAD_CAST "schemaLocation",
+               BAD_CAST
+               "http://graphml.graphdrawing.org/xmlns "
+               "http://graphml.graphdrawing.org/xmlns/1.0/graphml.xsd");
+
+  xmlNodePtr desc = xmlNewChild(root, nullptr, BAD_CAST "desc", nullptr);
+  xmlNewTextChild(desc, nullptr, BAD_CAST "version", BAD_CAST kPageGraphVersion);
+  xmlNewTextChild(desc, nullptr, BAD_CAST "about", BAD_CAST kPageGraphUrl);
+  xmlNewTextChild(desc, nullptr, BAD_CAST "is_root",
+                  BAD_CAST(is_root ? "true" : "false"));
+  xmlNewTextChild(desc, nullptr, BAD_CAST "frame_id",
+                  XmlUtf8String(frame_id).get());
+  if (is_root) {
+    xmlNewTextChild(desc, NULL, BAD_CAST "url",
+                    XmlUtf8String(source_url).get());
+  }
+  const auto date = base::Time::Now().InSecondsFSinceUnixEpoch();
+  xmlNewTextChild(desc, nullptr, BAD_CAST "date",
+                  BAD_CAST base::NumberToString(date).c_str());
+  xmlNodePtr time = xmlNewChild(desc, nullptr, BAD_CAST "time", nullptr);
+  xmlNewTextChild(time, nullptr, BAD_CAST "start",
+                  BAD_CAST base::NumberToString(0).c_str());
+  xmlNewTextChild(time, nullptr, BAD_CAST "end",
+                  BAD_CAST base::NumberToString(end_ms).c_str());
+
+  for (const auto& graphml_attr : brave_page_graph::GetGraphMLAttrs()) {
+    graphml_attr.second->AddDefinitionNode(root);
+  }
+
+  xmlNodePtr graph_node = xmlNewChild(root, nullptr, BAD_CAST "graph", nullptr);
+  xmlSetProp(graph_node, BAD_CAST "id", BAD_CAST "G");
+  xmlSetProp(graph_node, BAD_CAST "edgedefault", BAD_CAST "directed");
+  *out_graph_node = graph_node;
+  return doc;
+}
+
+// Emits the header of a streamed GraphML file through save_ctxt/file: the
+// <graphml> open literal, then the <desc>/<key> subtrees of header_doc via
+// libxml, then the <graph> open literal — leaving <graph> open so callers can
+// stream its children. Returns false on any write failure.
+bool WriteStreamedHeaderThroughCtxt(xmlSaveCtxtPtr save_ctxt,
+                                    base::File& file,
+                                    xmlDocPtr header_doc,
+                                    xmlNodePtr graph_node) {
+  if (!WriteStreamLiteral(save_ctxt, file, kStreamHeaderLiteral)) {
+    return false;
+  }
+  xmlNodePtr root = xmlDocGetRootElement(header_doc);
+  for (xmlNodePtr child = root->children; child && child != graph_node;
+       child = child->next) {
+    xmlSaveTree(save_ctxt, child);
+  }
+  return WriteStreamLiteral(save_ctxt, file, kStreamGraphOpenLiteral);
+}
+
+}  // namespace
+
+// Tier C durable record-time event log (opt-in via PAGEGRAPH_EVENT_LOG_DIR).
+// Holds the append-only libxml save context + base::File and a persistent
+// scratch <graph> parent whose children are unlinked after each item so live
+// libxml memory stays O(one item). Its destructor releases libxml/file
+// resources; PageGraph::~PageGraph()'s default is enough because of it.
+struct PageGraphEventLog {
+  base::File file;
+  xmlSaveCtxtPtr save_ctxt = nullptr;
+  xmlDocPtr scratch_doc = nullptr;
+  xmlNodePtr scratch_parent = nullptr;
+  std::string path;
+  size_t emitted = 0;
+  bool footer_written = false;
+
+  ~PageGraphEventLog() {
+    if (save_ctxt) {
+      xmlSaveClose(save_ctxt);
+    }
+    if (scratch_doc) {
+      xmlFreeDoc(scratch_doc);
+    }
+  }
+};
+
 // static
 const char PageGraph::kSupplementName[] = "PageGraph";
 
@@ -442,6 +587,15 @@ PageGraph::PageGraph(LocalFrame& local_frame)
   AddEdge<EdgeStorageBucket>(storage_node_, cookie_jar_node_);
   AddEdge<EdgeStorageBucket>(storage_node_, local_storage_node_);
   AddEdge<EdgeStorageBucket>(storage_node_, session_storage_node_);
+
+  // Enable async call-stack recording so per-edge stack traces include the
+  // async parent chain (timers, promises, fetch callbacks). Done here, before
+  // any page script runs, so no async task is missed.
+  if (auto* main_thread_debugger =
+          blink::MainThreadDebugger::Instance(v8::Isolate::GetCurrent())) {
+    brave_page_graph::EnsureAsyncStackCaptureEnabled(
+        main_thread_debugger->ContextGroupId(&local_frame));
+  }
 }
 
 PageGraph::~PageGraph() = default;
@@ -1044,8 +1198,14 @@ void PageGraph::AddGraphItem(std::unique_ptr<GraphItem> graph_item) {
   GraphItem* item = graph_item.get();
   graph_items_.push_back(std::move(graph_item));
 
+  // Tier C: mirror ToGraphML exactly by logging an item to the durable event
+  // log only where it is retained — every node, and edges only if same-context
+  // (below). No-op unless PAGEGRAPH_EVENT_LOG_DIR is set.
+  EnsureEventLogOpen();
+
   if (auto* graph_node = DynamicTo<GraphNode>(item)) {
     nodes_.push_back(graph_node);
+    LogGraphItem(graph_node);
     if (auto* element_node = DynamicTo<NodeHTMLElement>(graph_node)) {
       DCHECK(!element_nodes_.Contains(element_node->GetDOMNodeId()));
       element_nodes_.insert(element_node->GetDOMNodeId(), element_node);
@@ -1073,6 +1233,10 @@ void PageGraph::AddGraphItem(std::unique_ptr<GraphItem> graph_item) {
                                js_builtin_node);
     }
   } else if (auto* graph_edge = DynamicTo<GraphEdge>(item)) {
+    // Record the JS call stack (sync + async) that produced this edge, if any.
+    // Empty for edges created outside script execution (parser, network, engine
+    // bookkeeping); GraphEdge omits the attribute in that case.
+    graph_edge->SetStackTraceJson(brave_page_graph::CaptureStackTraceJson());
     // Connect only same-graph nodes. Multiple graphs can exist, but
     // interconnection is not implemented.
     if (graph_edge->GetInNode()->GetContext() ==
@@ -1080,6 +1244,7 @@ void PageGraph::AddGraphItem(std::unique_ptr<GraphItem> graph_item) {
       graph_edge->GetInNode()->AddInEdge(graph_edge);
       graph_edge->GetOutNode()->AddOutEdge(graph_edge);
       edges_.push_back(graph_edge);
+      LogGraphItem(graph_edge);
     }
   } else {
     NOTREACHED();
@@ -1135,65 +1300,117 @@ void PageGraph::GenerateReportForNode(const blink::DOMNodeId node_id,
 }
 
 String PageGraph::ToGraphML() const {
-  xmlDocPtr graphml_doc = xmlNewDoc(BAD_CAST "1.0");
-  xmlNodePtr graphml_root_node = xmlNewNode(nullptr, BAD_CAST "graphml");
-  xmlDocSetRootElement(graphml_doc, graphml_root_node);
+  // When the crawler sets PAGEGRAPH_OUT_DIR, stream the document straight to a
+  // file on disk instead of materializing the whole graph as a single
+  // blink::String. A blink::String's backing store caps at ~2GB, so very large
+  // graphs (heavy sites over long dwells) overflow it and CHECK-crash the
+  // renderer inside String::FromUtf8 (MaxElementCountInBackingStore).
+  //
+  // We serialize ONE graph item at a time straight to the file and never build
+  // the whole GraphML document in memory: BuildStreamedHeaderDoc holds only the
+  // <desc>/<key> definitions, and each <node>/<edge> subtree is emitted and then
+  // freed immediately. This (a) keeps peak serialization memory at O(one item)
+  // instead of a second full-graph copy (the libxml DOM tree), which was itself
+  // a likely OOM/CHECK trigger on huge graphs, and (b) makes the on-disk file a
+  // valid, monotonically-growing GraphML prefix (all <node>s, then all <edge>s):
+  // if the renderer aborts mid-serialization the crawler can tail-repair the
+  // truncated file and still recover every item written so far.
+  //
+  // We must NOT use xmlSaveFormatFileEnc / any libxml *Filename API here: Blink
+  // replaces libxml's global I/O callbacks with document-scoped ones
+  // (blink::OpenFunc), which CHECK-fail when invoked outside XML parsing (as we
+  // are). Instead we drive the serializer with our own write callback into a
+  // base::File: this streams incrementally (any size), never builds a giant
+  // blink::String, and bypasses Blink's libxml callbacks entirely. Only the file
+  // path (not the multi-GB graph) then crosses the DevTools pipe. The renderer
+  // must be allowed to write the file, so the crawler runs with --no-sandbox.
+  std::unique_ptr<base::Environment> env = base::Environment::Create();
+  const std::optional<std::string> out_dir = env->GetVar("PAGEGRAPH_OUT_DIR");
+  if (out_dir && !out_dir->empty()) {
+    const std::string file_path = base::StrCat(
+        {*out_dir, "/pagegraph_", base::NumberToString(frame_id_), "_",
+         base::NumberToString(base::Time::Now().InMillisecondsSinceUnixEpoch()),
+         ".graphml"});
+    base::File file(base::FilePath::FromUTF8Unsafe(file_path),
+                    base::File::FLAG_CREATE_ALWAYS | base::File::FLAG_WRITE);
+    if (!file.IsValid()) {
+      LOG(ERROR) << "PageGraph: cannot open graphml output file " << file_path;
+      return String();
+    }
+    // ioclose = nullptr: base::File owns the fd and closes it on scope exit.
+    xmlSaveCtxtPtr save_ctxt = xmlSaveToIO(
+        WriteFileCallback, /*ioclose=*/nullptr, &file, "UTF-8", /*options=*/0);
+    if (!save_ctxt) {
+      LOG(ERROR) << "PageGraph: cannot create xml save context for "
+                 << file_path;
+      return String();
+    }
 
-  xmlNewNs(graphml_root_node, BAD_CAST "http://graphml.graphdrawing.org/xmlns",
-           nullptr);
-  xmlNsPtr xsi_ns = xmlNewNs(
-      graphml_root_node, BAD_CAST "http://www.w3.org/2001/XMLSchema-instance",
-      BAD_CAST "xsi");
-  xmlNewNsProp(graphml_root_node, xsi_ns, BAD_CAST "schemaLocation",
-               BAD_CAST
-               "http://graphml.graphdrawing.org/xmlns "
-               "http://graphml.graphdrawing.org/xmlns/1.0/graphml.xsd");
+    xmlNodePtr graph_node = nullptr;
+    xmlDocPtr header_doc = BuildStreamedHeaderDoc(
+        frame_id_, IsRootFrame(), source_url_,
+        elapsed_timer_.Elapsed().InMilliseconds(), &graph_node);
+    bool write_ok =
+        WriteStreamedHeaderThroughCtxt(save_ctxt, file, header_doc, graph_node);
 
-  xmlNodePtr desc_container_node =
-      xmlNewChild(graphml_root_node, nullptr, BAD_CAST "desc", nullptr);
-  xmlNewTextChild(desc_container_node, nullptr, BAD_CAST "version",
-                  BAD_CAST kPageGraphVersion);
-  xmlNewTextChild(desc_container_node, nullptr, BAD_CAST "about",
-                  BAD_CAST kPageGraphUrl);
-  xmlNewTextChild(desc_container_node, nullptr, BAD_CAST "is_root",
-                  BAD_CAST(IsRootFrame() ? "true" : "false"));
-  xmlNewTextChild(desc_container_node, nullptr, BAD_CAST "frame_id",
-                  XmlUtf8String(frame_id_).get());
-  if (IsRootFrame()) {
-    xmlNewTextChild(desc_container_node, NULL, BAD_CAST "url",
-                    XmlUtf8String(source_url_).get());
+    // Stream every node then every edge, one item at a time, draining the
+    // scratch <graph> parent after each so live libxml memory stays O(1 item).
+    constexpr size_t kFlushEvery = 2000;
+    size_t emitted = 0;
+    const auto emit_item = [&](const auto* item) {
+      if (!write_ok) {
+        return;
+      }
+      item->AddGraphMLTag(header_doc, graph_node);
+      for (xmlNodePtr child = graph_node->children; child;) {
+        xmlNodePtr next = child->next;
+        xmlSaveTree(save_ctxt, child);
+        xmlUnlinkNode(child);
+        xmlFreeNode(child);
+        child = next;
+      }
+      if (++emitted % kFlushEvery == 0) {
+        xmlSaveFlush(save_ctxt);
+      }
+    };
+    for (const auto* node : nodes_) {
+      emit_item(node);
+    }
+    for (const auto* edge : edges_) {
+      emit_item(edge);
+    }
+
+    if (write_ok) {
+      write_ok = WriteStreamLiteral(save_ctxt, file, kStreamFooterLiteral);
+    }
+    const int flush_result = xmlSaveFlush(save_ctxt);
+    xmlSaveClose(save_ctxt);
+    xmlFreeDoc(header_doc);
+
+    // The graph serialized cleanly, so any Tier C event log for this frame is
+    // now redundant; finalize it so the crawler deletes it on the happy path.
+    CloseEventLog();
+
+    if (!write_ok || flush_result == -1) {
+      LOG(ERROR) << "PageGraph: failed to serialize graphml to " << file_path;
+      return String();
+    }
+    return String::FromUtf8(file_path);
   }
-  const auto date = base::Time::Now().InSecondsFSinceUnixEpoch();
-  xmlNewTextChild(desc_container_node, nullptr, BAD_CAST "date",
-                  BAD_CAST base::NumberToString(date).c_str());
 
-  xmlNodePtr time_container_node =
-      xmlNewChild(desc_container_node, nullptr, BAD_CAST "time", nullptr);
-
-  xmlNewTextChild(time_container_node, nullptr, BAD_CAST "start",
-                  BAD_CAST base::NumberToString(0).c_str());
-
-  const auto end_time = elapsed_timer_.Elapsed();
-  xmlNewTextChild(
-      time_container_node, nullptr, BAD_CAST "end",
-      BAD_CAST base::NumberToString(end_time.InMilliseconds()).c_str());
-
-  for (const auto& graphml_attr : brave_page_graph::GetGraphMLAttrs()) {
-    graphml_attr.second->AddDefinitionNode(graphml_root_node);
-  }
-
-  xmlNodePtr graph_node =
-      xmlNewChild(graphml_root_node, nullptr, BAD_CAST "graph", nullptr);
-  xmlSetProp(graph_node, BAD_CAST "id", BAD_CAST "G");
-  xmlSetProp(graph_node, BAD_CAST "edgedefault", BAD_CAST "directed");
-
+  // Fallback (PAGEGRAPH_OUT_DIR unset): materialize the whole graph inline and
+  // return it as before. This path still caps at ~2GB and is only safe for
+  // small graphs.
+  xmlNodePtr graph_node = nullptr;
+  xmlDocPtr graphml_doc = BuildStreamedHeaderDoc(
+      frame_id_, IsRootFrame(), source_url_,
+      elapsed_timer_.Elapsed().InMilliseconds(), &graph_node);
   for (const auto* node : nodes_) {
     node->AddGraphMLTag(graphml_doc, graph_node);
   }
   for (const auto* edge : edges_) {
     edge->AddGraphMLTag(graphml_doc, graph_node);
   }
-
   xmlChar* xml_string;
   int size;
   xmlDocDumpMemoryEnc(graphml_doc, &xml_string, &size, "UTF-8");
@@ -1208,6 +1425,105 @@ String PageGraph::ToGraphML() const {
   xmlFree(graphml_doc);
 
   return graphml_string;
+}
+
+// Tier C: open the record-time event log lazily on the first AddGraphItem when
+// PAGEGRAPH_EVENT_LOG_DIR is set. Writes the same GraphML header as the streamed
+// ToGraphML path, then leaves <graph> open so LogGraphItem can append items as
+// they are recorded. Any failure latches event_log_disabled_ — the log is a
+// best-effort safety net and must never take down a crawl.
+void PageGraph::EnsureEventLogOpen() {
+  if (event_log_ || event_log_disabled_) {
+    return;
+  }
+  std::unique_ptr<base::Environment> env = base::Environment::Create();
+  const std::optional<std::string> dir = env->GetVar("PAGEGRAPH_EVENT_LOG_DIR");
+  if (!dir || dir->empty()) {
+    event_log_disabled_ = true;
+    return;
+  }
+
+  auto log = std::make_unique<PageGraphEventLog>();
+  log->path = base::StrCat(
+      {*dir, "/pagegraph_eventlog_", base::NumberToString(frame_id_), "_",
+       base::NumberToString(base::Time::Now().InMillisecondsSinceUnixEpoch()),
+       ".graphml.partial"});
+  log->file = base::File(base::FilePath::FromUTF8Unsafe(log->path),
+                         base::File::FLAG_CREATE_ALWAYS | base::File::FLAG_WRITE);
+  if (!log->file.IsValid()) {
+    LOG(ERROR) << "PageGraph: cannot open event log " << log->path;
+    event_log_disabled_ = true;
+    return;
+  }
+  log->save_ctxt = xmlSaveToIO(WriteFileCallback, /*ioclose=*/nullptr,
+                               &log->file, "UTF-8", /*options=*/0);
+  if (!log->save_ctxt) {
+    LOG(ERROR) << "PageGraph: cannot create event-log save context for "
+               << log->path;
+    event_log_disabled_ = true;
+    return;
+  }
+
+  xmlNodePtr header_graph_node = nullptr;
+  xmlDocPtr header_doc = BuildStreamedHeaderDoc(
+      frame_id_, IsRootFrame(), source_url_,
+      elapsed_timer_.Elapsed().InMilliseconds(), &header_graph_node);
+  const bool header_ok = WriteStreamedHeaderThroughCtxt(
+      log->save_ctxt, log->file, header_doc, header_graph_node);
+  xmlFreeDoc(header_doc);
+  if (!header_ok) {
+    LOG(ERROR) << "PageGraph: cannot write event-log header " << log->path;
+    event_log_disabled_ = true;  // ~PageGraphEventLog closes save_ctxt/file.
+    return;
+  }
+
+  // Persistent detached scratch <graph> parent: LogGraphItem builds each item's
+  // subtree under it, serializes it, then unlinks/frees the child, so live
+  // libxml memory stays O(one item) for the whole recording.
+  log->scratch_doc = xmlNewDoc(BAD_CAST "1.0");
+  log->scratch_parent = xmlNewNode(nullptr, BAD_CAST "graph");
+  xmlDocSetRootElement(log->scratch_doc, log->scratch_parent);
+
+  VLOG(1) << "PageGraph: event log opened at " << log->path;
+  event_log_ = std::move(log);
+}
+
+// Tier C: serialize one graph item to the event log as it is recorded. No-op if
+// the log is disabled/closed. Flushes periodically so a hard renderer crash
+// loses at most the last handful of items (write() bytes already reach the OS
+// page cache, which survives the crash).
+void PageGraph::LogGraphItem(const GraphItem* item) {
+  if (!event_log_ || event_log_->footer_written) {
+    return;
+  }
+  PageGraphEventLog& log = *event_log_;
+  item->AddGraphMLTag(log.scratch_doc, log.scratch_parent);
+  for (xmlNodePtr child = log.scratch_parent->children; child;) {
+    xmlNodePtr next = child->next;
+    xmlSaveTree(log.save_ctxt, child);
+    xmlUnlinkNode(child);
+    xmlFreeNode(child);
+    child = next;
+  }
+  constexpr size_t kEventLogFlushEvery = 64;
+  if (++log.emitted % kEventLogFlushEvery == 0) {
+    xmlSaveFlush(log.save_ctxt);
+  }
+}
+
+// Tier C: finalize the event log after a clean ToGraphML. Appends the footer so
+// the file is well-formed, then flushes; ~PageGraphEventLog does the actual
+// xmlSaveClose/free. The crawler deletes this now-redundant .partial on the
+// happy path. On a crash this is never reached, leaving a tail-repairable
+// prefix for recovery.
+void PageGraph::CloseEventLog() const {
+  if (!event_log_ || event_log_->footer_written) {
+    return;
+  }
+  PageGraphEventLog& log = *event_log_;
+  log.footer_written = true;
+  WriteStreamLiteral(log.save_ctxt, log.file, kStreamFooterLiteral);
+  xmlSaveFlush(log.save_ctxt);
 }
 
 NodeHTML* PageGraph::GetHTMLNode(const DOMNodeId node_id) const {
@@ -1926,7 +2242,10 @@ void PageGraph::RegisterStorageDelete(
       storage_node = session_storage_node_;
       break;
     case StorageLocation::kCookie:
-      CHECK(location != StorageLocation::kCookie);
+      // Reached via cookieStore.delete(). Record the deletion against the cookie
+      // jar (document.cookie deletions arrive as expiring StorageSet writes).
+      storage_node = cookie_jar_node_;
+      break;
   }
 
   FrameId frame_id = GetFrameId(execution_context);

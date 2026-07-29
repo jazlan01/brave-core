@@ -220,6 +220,8 @@ const GraphMLAttrs& GetGraphMLAttrs() {
        new GraphMLAttr(kGraphMLAttrForTypeEdge, "size", kGraphMLAttrTypeInt)},
       {kGraphMLAttrDefSource,
        new GraphMLAttr(kGraphMLAttrForTypeNode, "source")},
+      {kGraphMLAttrDefStackTrace,
+       new GraphMLAttr(kGraphMLAttrForTypeEdge, "stack trace")},
       {kGraphMLAttrDefStatus,
        new GraphMLAttr(kGraphMLAttrForTypeEdge, "status")},
       {kGraphMLAttrDefSuccess,

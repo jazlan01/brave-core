@@ -10,8 +10,10 @@
   IF_BUILDFLAG(ENABLE_BRAVE_PAGE_GRAPH, {                                 \
     if (CoreProbeSink::HasAgentsGlobal(CoreProbeSink::kPageGraph)) {      \
       options.SetDOMNodeId(module_script->FetchOptions().GetDOMNodeId()); \
+      v8::HandleScope handle_scope(                                       \
+          modulator_->GetScriptState()->GetIsolate());                   \
       v8::Local<v8::Module> record = result_->V8Module();                 \
-      if (record->IsSourceTextModule()) {                                 \
+      if (!record.IsEmpty() && record->IsSourceTextModule()) {           \
         options.SetParentScriptId(record->ScriptId());                    \
       }                                                                   \
     }                                                                     \

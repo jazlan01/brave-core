@@ -6,6 +6,7 @@
 #include "brave/third_party/blink/renderer/core/brave_page_graph/graph_item/edge/graph_edge.h"
 
 #include <string>
+#include <string_view>
 
 #include "base/check.h"
 #include "base/strings/string_number_conversions.h"
@@ -50,6 +51,10 @@ void GraphEdge::AddGraphMLAttributes(xmlDocPtr doc,
   GraphMLAttrDefForType(kGraphMLAttrDefPageGraphEdgeTimestamp)
       ->AddValueNode(doc, parent_node,
                      GetTimeDeltaSincePageStart().InMilliseconds());
+  if (!stack_trace_json_.empty()) {
+    GraphMLAttrDefForType(kGraphMLAttrDefStackTrace)
+        ->AddValueNode(doc, parent_node, std::string_view(stack_trace_json_));
+  }
 }
 
 bool GraphEdge::IsEdge() const {

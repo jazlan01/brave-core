@@ -113,6 +113,10 @@ enum class ResourceType : uint8_t;
 // https://docs.google.com/document/d/1aitSOucL0VHZa9Z2vbRJSyAIsAz24kX8LFByQ5xQnUg/edit
 // https://docs.google.com/presentation/d/1pHjF3TNCX--j0ss3SK09pXlVOFK0Cdq6HkMcOzcov1o/edit#slide=id.g4983c55b2d55fcc7_42
 
+// Tier C durable event log (opt-in via PAGEGRAPH_EVENT_LOG_DIR). Pimpl so the
+// libxml/base::File plumbing stays out of this header; defined in page_graph.cc.
+struct PageGraphEventLog;
+
 class CORE_EXPORT PageGraph : public GarbageCollected<PageGraph>,
                               public Supplement<LocalFrame>,
                               public brave_page_graph::PageGraphContext {
@@ -241,6 +245,15 @@ class CORE_EXPORT PageGraph : public GarbageCollected<PageGraph>,
   String ToGraphML() const;
 
  private:
+  // Tier C: durable record-time event log. Opened lazily on the first
+  // AddGraphItem when PAGEGRAPH_EVENT_LOG_DIR is set; each item is serialized to
+  // disk as it is recorded so a recording-time crash (before ToGraphML runs)
+  // still leaves a recoverable partial graph. All no-ops (and never fatal) when
+  // disabled or on any I/O failure.
+  void EnsureEventLogOpen();
+  void LogGraphItem(const brave_page_graph::GraphItem* item);
+  void CloseEventLog() const;
+
 #define PAGE_GRAPH_USING_DECL(type) using type = brave_page_graph::type
   PAGE_GRAPH_USING_DECL(Binding);
   PAGE_GRAPH_USING_DECL(BindingEvent);
@@ -472,6 +485,13 @@ class CORE_EXPORT PageGraph : public GarbageCollected<PageGraph>,
   GraphItemUniquePtrList graph_items_;
   EdgeList edges_;
   NodeList nodes_;
+
+  // Tier C durable event log (see EnsureEventLogOpen/LogGraphItem). Null unless
+  // enabled; `mutable` so the clean-close in the const ToGraphML() can finalize
+  // it. `event_log_disabled_` latches once we decide not to log (env unset or an
+  // I/O failure) so we never re-check per item.
+  mutable std::unique_ptr<PageGraphEventLog> event_log_;
+  bool event_log_disabled_ = false;
 
   // Non-owning references to singleton items in the graph. (the owning
   // references will be in the above vectors).

@@ -6,6 +6,9 @@
 #ifndef BRAVE_THIRD_PARTY_BLINK_RENDERER_CORE_BRAVE_PAGE_GRAPH_GRAPH_ITEM_EDGE_GRAPH_EDGE_H_
 #define BRAVE_THIRD_PARTY_BLINK_RENDERER_CORE_BRAVE_PAGE_GRAPH_GRAPH_ITEM_EDGE_GRAPH_EDGE_H_
 
+#include <string>
+#include <utility>
+
 #include "brave/third_party/blink/renderer/core/brave_page_graph/graph_item/graph_item.h"
 #include "third_party/blink/renderer/platform/wtf/casting.h"
 
@@ -21,6 +24,15 @@ class GraphEdge : public GraphItem {
 
   GraphNode* GetOutNode() const { return out_node_; }
   GraphNode* GetInNode() const { return in_node_; }
+
+  // JSON-serialized DevTools Runtime.StackTrace (sync frames + async parent
+  // chain) of the JS that caused this edge, captured at edge-creation time.
+  // Empty when the edge was not produced by executing script (parser, network
+  // callbacks, engine bookkeeping).
+  void SetStackTraceJson(std::string stack_trace_json) {
+    stack_trace_json_ = std::move(stack_trace_json);
+  }
+  const std::string& GetStackTraceJson() const { return stack_trace_json_; }
 
   GraphMLId GetGraphMLId() const override;
   void AddGraphMLTag(xmlDocPtr doc, xmlNodePtr parent_node) const override;
@@ -52,6 +64,8 @@ class GraphEdge : public GraphItem {
   // These pointers are not owning: the GraphItemContext instance owns them.
   GraphNode* const out_node_;
   GraphNode* const in_node_;
+
+  std::string stack_trace_json_;
 };
 
 }  // namespace brave_page_graph
