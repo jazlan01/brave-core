@@ -32,6 +32,9 @@ class EdgeRequestComplete final : public EdgeRequestResponse {
   ItemName GetItemName() const override;
   ItemDesc GetItemDesc() const override;
 
+  void AddGraphMLAttributes(xmlDocPtr doc,
+                            xmlNodePtr parent_node) const override;
+
   bool IsEdgeRequestComplete() const override;
 
  private:

@@ -39,6 +39,20 @@ ItemDesc EdgeRequestComplete::GetItemDesc() const {
       {EdgeRequestResponse::GetItemDesc(), " [", resource_type_, "]"});
 }
 
+void EdgeRequestComplete::AddGraphMLAttributes(xmlDocPtr doc,
+                                               xmlNodePtr parent_node) const {
+  EdgeRequestResponse::AddGraphMLAttributes(doc, parent_node);
+  // SHA-256 of the response body, accumulated in TrackedRequest as the bytes
+  // arrive. It has always been computed and handed to this edge, but never
+  // emitted, so the attribute was declared with no producer. It identifies a
+  // body without recording its content — which is what makes it a usable join
+  // key for the crawler's body sidecar.
+  if (!hash_.empty()) {
+    GraphMLAttrDefForType(kGraphMLAttrDefResponseHash)
+        ->AddValueNode(doc, parent_node, hash_);
+  }
+}
+
 bool EdgeRequestComplete::IsEdgeRequestComplete() const {
   return true;
 }

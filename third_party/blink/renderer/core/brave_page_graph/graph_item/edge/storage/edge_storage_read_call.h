@@ -21,12 +21,23 @@ class EdgeStorageReadCall final : public EdgeStorage {
                       NodeActor* out_node,
                       NodeStorage* in_node,
                       const FrameId& frame_id,
-                      const blink::String& key);
+                      const blink::String& key,
+                      const int script_position);
   ~EdgeStorageReadCall() override;
 
   ItemName GetItemName() const override;
 
+  void AddGraphMLAttributes(xmlDocPtr doc,
+                            xmlNodePtr parent_node) const override;
+
   bool IsEdgeStorageReadCall() const override;
+
+ private:
+  // Byte offset of the reading statement within the acting script's source — the
+  // same value EdgeStorageSet records for writes. Reads previously carried no
+  // position, forcing consumers to recover the call site from the stack trace
+  // instead, which fails whenever a frame's script has no recorded source.
+  const int script_position_;
 };
 
 }  // namespace brave_page_graph

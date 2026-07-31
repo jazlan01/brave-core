@@ -27,6 +27,10 @@ _IS_OBSERVABLE_ARRAY_SETTER = "pg_is_observable_array_setter"
 _PAGE_GRAPH_TRACKED_ITEMS = {
     "AudioContext": {"*"},
     "BaseAudioContext": {"*"},
+    # Broadcast messaging. Same reasoning as Window.postMessage.
+    "BroadcastChannel": {
+        "postMessage",
+    },
     "CanvasRenderingContext2D": {
         "measureText",
     },
@@ -35,6 +39,9 @@ _PAGE_GRAPH_TRACKED_ITEMS = {
         "delete",
         "get",
         "getAll",
+    },
+    "DedicatedWorkerGlobalScope": {
+        "postMessage",
     },
     "Document": {
         "cookie",
@@ -49,6 +56,9 @@ _PAGE_GRAPH_TRACKED_ITEMS = {
     },
     "Location": {"*"},
     "MediaDevices": {"*"},
+    "MessagePort": {
+        "postMessage",
+    },
     "Navigator": {"*"},
     "OfflineAudioContext": {"*"},
     "OffscreenCanvasRenderingContext2D": {
@@ -60,6 +70,9 @@ _PAGE_GRAPH_TRACKED_ITEMS = {
     "PerformanceObserver": {"*"},
     "PerformanceTiming": {"*"},
     "Screen": {"*"},
+    "ServiceWorker": {
+        "postMessage",
+    },
     "Storage": {"*"},
     "TextDecoder": {
         "decode",
@@ -85,8 +98,17 @@ _PAGE_GRAPH_TRACKED_ITEMS = {
         "fetch",
         "matchMedia",
         "performance",
+        # Cross-frame messaging. Without this, an identifier handed to another
+        # frame is invisible: "cross DOM" edges are the frame-owner-to-document
+        # structural link and carry no payload, so passing a value via
+        # postMessage left no trace at all. Tracking the call records the
+        # serialized message in the js call edge's "args" attribute.
+        "postMessage",
         "setInterval",
         "setTimeout",
+    },
+    "Worker": {
+        "postMessage",
     },
     "WorkerGlobalScope": {
         "atob",

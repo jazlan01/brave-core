@@ -2162,7 +2162,13 @@ void PageGraph::RegisterStorageRead(blink::ExecutionContext* execution_context,
                                     const StorageLocation location) {
   VLOG(1) << "RegisterStorageRead) key: " << key << ", value: " << value
           << ", location: " << StorageLocationToString(location);
-  NodeActor* acting_node = GetCurrentActingNode(execution_context);
+  // Capture the call-site offset for reads, as RegisterStorageWrite does for
+  // writes. Passing the out-param is what enables it: a non-null pointer doubles
+  // as the "include position" flag, because materializing V8 source positions is
+  // not free.
+  ScriptPosition script_position = 0;
+  NodeActor* acting_node =
+      GetCurrentActingNode(execution_context, &script_position);
 
   if (!acting_node->IsNodeScript()) {
     acting_node = GetUnknownActorNode();
@@ -2182,7 +2188,8 @@ void PageGraph::RegisterStorageRead(blink::ExecutionContext* execution_context,
   }
 
   FrameId frame_id = GetFrameId(execution_context);
-  AddEdge<EdgeStorageReadCall>(acting_node, storage_node, frame_id, key);
+  AddEdge<EdgeStorageReadCall>(acting_node, storage_node, frame_id, key,
+                               script_position);
   AddEdge<EdgeStorageReadResult>(storage_node, acting_node, frame_id, key,
                                  value);
 }
