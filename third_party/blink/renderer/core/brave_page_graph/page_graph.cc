@@ -998,11 +998,17 @@ void PageGraph::RegisterPageGraphWebAPICallWithResult(
   const std::string_view name_piece(name);
   if (name_piece.starts_with("Document.")) {
     if (name_piece == "Document.cookie.get") {
-      RegisterStorageRead(execution_context,
-                          String(*receiver_data.FindString("cookie_url")),
-                          *result, brave_page_graph::StorageLocation::kCookie);
-      return;
-    } else if (name_piece == "Document.cookie.set") {
+      // Dereferencing FindString unchecked would crash the renderer if the
+      // receiver data ever lacks the key; fall through to a generic WebAPI call
+      // instead.
+      const std::string* cookie_url = receiver_data.FindString("cookie_url");
+      if (cookie_url && result) {
+        RegisterStorageRead(execution_context, String(*cookie_url), *result,
+                            brave_page_graph::StorageLocation::kCookie);
+        return;
+      }
+    } else if (name_piece == "Document.cookie.set" && !args.empty() &&
+               args[0].is_string()) {
       String value(args[0].GetString());
       blink::Vector<String> cookie_structure = value.SplitSkippingEmpty('=');
       String cookie_key = *(cookie_structure.begin());
@@ -1015,50 +1021,96 @@ void PageGraph::RegisterPageGraphWebAPICallWithResult(
       return;
     }
   } else if (name_piece.starts_with("CookieStore.")) {
-    // The async Cookie Store API. The instrumented call shape is
-    // CookieStore.set(name, value) / CookieStore.delete(name); record it as a
-    // cookie write tagged with the cookie-store source so it is distinguishable
-    // from the document.cookie channel.
-    // NOTE: the exact instrumented method name/arg shape must be confirmed
-    // against the generated bindings; if it differs, this branch is inert and
-    // the call falls through to a generic WebAPI call below.
-    if (name_piece == "CookieStore.set" && args.size() >= 2) {
-      RegisterStorageWrite(execution_context, String(args[0].GetString()),
-                           args[1],
-                           brave_page_graph::StorageLocation::kCookie,
-                           brave_page_graph::CookieSource::kCookieStore);
-      return;
+    // The async Cookie Store API, recorded as a cookie write/delete tagged with
+    // the cookie-store source so it stays distinguishable from the
+    // document.cookie channel.
+    //
+    // Both call shapes reach here and the argument type MUST be checked before
+    // reading it. The IDL accepts either positional strings
+    // (cookieStore.set(name, value), cookieStore.delete(name)) or a single
+    // options dictionary (cookieStore.set({name, value, ...}),
+    // cookieStore.delete({name, path})). base::Value::GetString() is a DCHECK'd
+    // std::get on the variant, so in this dcheck-off, -fno-exceptions build a
+    // dictionary argument does not fail soft — it throws bad_variant_access and
+    // aborts the renderer (SIGABRT) mid-recording. Consent managers and
+    // bot-detection scripts use the dictionary form heavily, so this is a hot
+    // path on real pages: it is what kills the renderer when a consent banner
+    // is accepted.
+    //
+    // Anything that matches neither shape falls through to the generic WebAPI
+    // call below rather than being dropped.
+    if (name_piece == "CookieStore.set") {
+      if (args.size() >= 2 && args[0].is_string()) {
+        RegisterStorageWrite(execution_context, String(args[0].GetString()),
+                             args[1],
+                             brave_page_graph::StorageLocation::kCookie,
+                             brave_page_graph::CookieSource::kCookieStore);
+        return;
+      }
+      if (args.size() >= 1 && args[0].is_dict()) {
+        const base::DictValue& options = args[0].GetDict();
+        if (const std::string* cookie_name = options.FindString("name")) {
+          const base::Value* cookie_value = options.Find("value");
+          RegisterStorageWrite(execution_context, String(*cookie_name),
+                               cookie_value ? cookie_value->Clone()
+                                            : base::Value(),
+                               brave_page_graph::StorageLocation::kCookie,
+                               brave_page_graph::CookieSource::kCookieStore);
+          return;
+        }
+      }
     }
-    if (name_piece == "CookieStore.delete" && args.size() >= 1) {
-      RegisterStorageDelete(execution_context, String(args[0].GetString()),
-                            brave_page_graph::StorageLocation::kCookie);
-      return;
+    if (name_piece == "CookieStore.delete") {
+      if (args.size() >= 1 && args[0].is_string()) {
+        RegisterStorageDelete(execution_context, String(args[0].GetString()),
+                              brave_page_graph::StorageLocation::kCookie);
+        return;
+      }
+      if (args.size() >= 1 && args[0].is_dict()) {
+        if (const std::string* cookie_name =
+                args[0].GetDict().FindString("name")) {
+          RegisterStorageDelete(execution_context, String(*cookie_name),
+                                brave_page_graph::StorageLocation::kCookie);
+          return;
+        }
+      }
     }
   } else if (name_piece.starts_with("Storage.")) {
-    String storage_type(*receiver_data.FindString("storage_type"));
-    DCHECK(storage_type == "localStorage" || storage_type == "sessionStorage");
-    const auto storage = storage_type == "localStorage"
-                             ? StorageLocation::kLocalStorage
-                             : StorageLocation::kSessionStorage;
-    if (name_piece == "Storage.getItem") {
-      DCHECK(result);
-      RegisterStorageRead(execution_context, String(args[0].GetString()),
-                          *result, storage);
-      return;
-    }
-    if (name_piece == "Storage.setItem") {
-      RegisterStorageWrite(execution_context, String(args[0].GetString()),
-                           args[1], storage);
-      return;
-    }
-    if (name_piece == "Storage.removeItem") {
-      RegisterStorageDelete(execution_context, String(args[0].GetString()),
-                            storage);
-      return;
-    }
-    if (name_piece == "Storage.clear") {
-      RegisterStorageClear(execution_context, storage);
-      return;
+    // A missing storage_type would previously be dereferenced unchecked. Guard
+    // it; anything unrecognised simply falls through to the generic WebAPI call
+    // at the end of this function.
+    if (const std::string* storage_type_str =
+            receiver_data.FindString("storage_type")) {
+      String storage_type(*storage_type_str);
+      DCHECK(storage_type == "localStorage" ||
+             storage_type == "sessionStorage");
+      const auto storage = storage_type == "localStorage"
+                               ? StorageLocation::kLocalStorage
+                               : StorageLocation::kSessionStorage;
+      // As with CookieStore above, the key argument is read only after
+      // confirming it really is a string: a wrong-alternative GetString()
+      // aborts the renderer in this build rather than failing soft.
+      const bool has_string_key = !args.empty() && args[0].is_string();
+      if (name_piece == "Storage.getItem" && has_string_key && result) {
+        RegisterStorageRead(execution_context, String(args[0].GetString()),
+                            *result, storage);
+        return;
+      }
+      if (name_piece == "Storage.setItem" && has_string_key &&
+          args.size() >= 2) {
+        RegisterStorageWrite(execution_context, String(args[0].GetString()),
+                             args[1], storage);
+        return;
+      }
+      if (name_piece == "Storage.removeItem" && has_string_key) {
+        RegisterStorageDelete(execution_context, String(args[0].GetString()),
+                              storage);
+        return;
+      }
+      if (name_piece == "Storage.clear") {
+        RegisterStorageClear(execution_context, storage);
+        return;
+      }
     }
   }
   RegisterWebAPICall(execution_context, name, args);

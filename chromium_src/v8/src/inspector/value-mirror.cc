@@ -9,6 +9,7 @@
 
 #if BUILDFLAG(ENABLE_BRAVE_PAGE_GRAPH)
 
+
 #include "brave/v8/include/v8-isolate-page-graph-utils.h"
 #include "v8-local-handle.h"
 #include "v8-primitive.h"
@@ -149,14 +150,29 @@ v8::Local<v8::Value> SerializeValue(v8::Local<v8::Context> context,
     return serialized_value;
   }
 
+  // `value.As<Object>()` below is an unchecked cast. Feeding getProperties a
+  // non-object makes it walk a bogus object layout, which is how this path has
+  // faulted (SIGBUS/BUS_ADRALN inside KeyAccumulator's element collection) while
+  // serializing web API arguments on real pages.
+  if (value.IsEmpty() || !value->IsObject()) {
+    return serialized_value;
+  }
+
+  Isolate* isolate = v8::Isolate::GetCurrent();
+
+  // Bail out rather than serialize while an exception is pending: the inspector
+  // machinery below allocates and calls back into V8, which is not safe in that
+  // state.
+  if (isolate->HasPendingException()) {
+    return serialized_value;
+  }
+
   // Get all properties, including not enumerable and internal.
   PropertyMirrors properties;
   if (!v8_inspector::ValueMirror::getProperties(
           context, value.As<Object>(), false, false, false, &properties)) {
     return serialized_value;
   }
-
-  Isolate* isolate = v8::Isolate::GetCurrent();
   serialized_value = Object::New(isolate);
 
   for (auto& mirror : properties.mirrors()) {
