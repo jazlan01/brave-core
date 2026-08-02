@@ -109,13 +109,28 @@ void NodeHTMLElement::PlaceChildNodeAfterSiblingNode(NodeHTML* child,
 
   // Otherwise, figure out where the sibling is in the child node set.
   const auto sib_pos = child_nodes_.Find(sibling);
-  CHECK_NE(sib_pos, blink::kNotFound);
+  if (sib_pos == blink::kNotFound) {
+    // The sibling can legitimately be missing from this mirror tree: Blink's
+    // document-fragment fast path
+    // (ContainerNode::ParserAppendChildInDocumentFragment) fires
+    // probe::DidInsertDOMNode with the *parent* node, and descendants of a
+    // fragment inserted as a whole subtree never receive per-node insert
+    // probes at all. When a later insertion (e.g. Node.before()) names such a
+    // node as the reference sibling, fall back to appending instead of
+    // crashing the renderer.
+    child_nodes_.push_back(child);
+    return;
+  }
   child_nodes_.insert(sib_pos + 1, child);
 }
 
 void NodeHTMLElement::RemoveChildNode(NodeHTML* child_node) {
   const auto child_pos = child_nodes_.Find(child_node);
-  CHECK_NE(child_pos, blink::kNotFound);
+  if (child_pos == blink::kNotFound) {
+    // See PlaceChildNodeAfterSiblingNode: the mirror tree may never have
+    // placed this child under this parent. Nothing to remove.
+    return;
+  }
   child_nodes_.EraseAt(child_pos);
 }
 

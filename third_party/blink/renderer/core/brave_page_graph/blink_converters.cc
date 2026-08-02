@@ -77,8 +77,16 @@ base::Value ToPageGraphValue(ScriptState* script_state,
 template <>
 base::Value ToPageGraphValue(ScriptState* script_state,
                              const ScriptObject& script_object) {
-  v8::Local<v8::Object> object = script_object.V8Object();
-  return ToPageGraphValue(script_state, object);
+  // A ScriptObject may legally hold null (e.g. a nullable `object?` return
+  // value such as WebGLRenderingContext.getExtension() probed with an
+  // unsupported extension name) or be empty. ScriptObject::V8Object() CHECKs
+  // IsObject() and would kill the renderer on those, so route through the
+  // ScriptValue converter, which handles empty/null values.
+  const ScriptValue& script_value = script_object;
+  if (script_value.IsEmpty() || script_value.IsNull()) {
+    return base::Value();
+  }
+  return ToPageGraphValue(script_state, script_value);
 }
 
 template <>
