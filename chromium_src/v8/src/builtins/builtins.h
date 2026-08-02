@@ -16,10 +16,16 @@ namespace internal {
 #if BUILDFLAG(ENABLE_BRAVE_PAGE_GRAPH_WEBAPI_PROBES)
 class BuiltinArguments;
 
+// `builtin_result` is an in/out parameter pointing at the raw, unrooted
+// Tagged<Object> that the BUILTIN macro is about to hand back to generated
+// code. This function allocates, so a GC can relocate that object; it roots
+// the value and writes the (possibly updated) address back through the
+// pointer before returning. It must not be taken by value or by const-ref --
+// doing so roots only a copy and leaves the caller with a stale address.
 void ReportBuiltinCallAndResponse(Isolate* isolate,
                                   const char* builtin_name,
                                   const BuiltinArguments& builtin_args,
-                                  const Tagged<Object>& builtin_result);
+                                  Tagged<Object>* builtin_result);
 #endif  // BUILDFLAG(ENABLE_BRAVE_PAGE_GRAPH_WEBAPI_PROBES)
 
 }  // namespace internal

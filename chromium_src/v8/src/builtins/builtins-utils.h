@@ -48,7 +48,7 @@ static_assert(false, "BUILTIN macro is expected to be defined");
     Tagged<Object> result(Builtin_Impl_##name(args, isolate));             \
     if (V8_UNLIKELY(IsBuiltinTrackedInPageGraph(#name)) &&                 \
         V8_UNLIKELY(isolate->page_graph_delegate())) {                     \
-      ReportBuiltinCallAndResponse(isolate, #name, args, result);          \
+      ReportBuiltinCallAndResponse(isolate, #name, args, &result);         \
     }                                                                      \
     return BUILTIN_CONVERT_RESULT(result);                                 \
   }                                                                        \

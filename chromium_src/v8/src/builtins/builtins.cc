@@ -39,22 +39,30 @@ static std::string ToPageGraphArg(Isolate* isolate, Handle<Object> object) {
 void ReportBuiltinCallAndResponse(Isolate* isolate,
                                   const char* builtin_name,
                                   const BuiltinArguments& builtin_args,
-                                  const Tagged<Object>& builtin_result) {
+                                  Tagged<Object>* builtin_result) {
   HandleScope scope(isolate);
 
-  // Root the result BEFORE serializing the arguments below. ToPageGraphArg ->
-  // Object::NoSideEffectsToMaybeString allocates (it builds strings) and can
-  // trigger a GC; `builtin_result` arrives as a raw, unrooted Tagged<Object>, so
-  // a GC during arg serialization would move the result object and leave the
-  // raw reference dangling — later dereferencing it reads a moved/garbage map
-  // pointer and faults (SIGBUS/BUS_ADRALN on builtins with args + a movable
-  // result, e.g. JSON.stringify). Binding it to a Handle here lets the GC update
-  // it. (Arguments/receiver come from BuiltinArguments and are already rooted in
-  // the frame, so they don't need this.)
+  // Root the result BEFORE serializing the arguments below, and write the
+  // rooted value back at the end. Everything under this function allocates
+  // (ToPageGraphArg -> Object::NoSideEffectsToMaybeString builds strings, and
+  // the PageGraph delegate allocates further), so a GC can run here.
+  // `*builtin_result` is the raw, unrooted Tagged<Object> that the BUILTIN
+  // macro is about to return to generated code; if a GC moves that object,
+  // the macro hands a stale address back to JS. The JS value then looks like
+  // a heap object with a garbage map, and the next property load on it faults
+  // (SIGBUS/BUS_ADRALN) or trips V8's "null prototype chain root" check --
+  // typically far away from here, in unrelated script.
+  //
+  // Binding it to a Handle lets the GC update it, but the update lands in the
+  // handle, not in the caller's raw variable, so the new address must be
+  // copied back through the pointer before we return.
+  //
+  // (Arguments and the receiver come from BuiltinArguments and are already
+  // rooted in the frame, so they don't need this.)
   const bool has_result =
-      builtin_result.ptr() && !IsUndefined(builtin_result);
+      builtin_result->ptr() && !IsUndefined(*builtin_result);
   Handle<Object> result_handle =
-      has_result ? Handle<Object>(builtin_result, isolate) : Handle<Object>();
+      has_result ? Handle<Object>(*builtin_result, isolate) : Handle<Object>();
 
   std::vector<std::string> args;
   // Start from 1 to skip receiver arg.
@@ -84,6 +92,12 @@ void ReportBuiltinCallAndResponse(Isolate* isolate,
 
   isolate->page_graph_delegate()->OnBuiltinCall(context, builtin_name, args,
                                                 result ? &*result : nullptr);
+
+  // Hand the possibly-relocated address back to the BUILTIN macro. Must happen
+  // before `scope` is destroyed.
+  if (has_result) {
+    *builtin_result = *result_handle;
+  }
 }
 #endif  // BUILDFLAG(ENABLE_BRAVE_PAGE_GRAPH_WEBAPI_PROBES)
 
